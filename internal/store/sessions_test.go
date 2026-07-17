@@ -50,8 +50,12 @@ func TestDeleteUserSessionsExceptKeepsTheCaller(t *testing.T) {
 		}
 	}
 
-	if err := st.DeleteUserSessionsExcept(alice.ID, "here"); err != nil {
+	n, err := st.DeleteUserSessionsExcept(alice.ID, "here")
+	if err != nil {
 		t.Fatalf("delete except: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("revoked count is what the UI reports back to the user, want 2, got %d", n)
 	}
 	if _, err := st.SessionUser("here"); err != nil {
 		t.Errorf("the kept session must survive: %v", err)
@@ -72,7 +76,7 @@ func TestDeleteUserSessionsExceptWithNoTokenRevokesAll(t *testing.T) {
 	if err := st.CreateSession("only", alice.ID, time.Now().Add(time.Hour).Unix()); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if err := st.DeleteUserSessionsExcept(alice.ID, ""); err != nil {
+	if _, err := st.DeleteUserSessionsExcept(alice.ID, ""); err != nil {
 		t.Fatalf("delete except: %v", err)
 	}
 	if _, err := st.SessionUser("only"); !errors.Is(err, ErrNotFound) {

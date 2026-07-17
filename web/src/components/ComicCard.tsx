@@ -76,6 +76,7 @@ export function ComicCard({ comic, progress }: { comic: Comic; progress?: Progre
               bg: "rgba(10, 8, 9, 0.82)",
               color: "attention",
             })}
+            role="img"
             title="This file has gone missing"
             aria-label="This file has gone missing"
           >

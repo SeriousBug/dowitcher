@@ -493,7 +493,10 @@ export function ImportPage() {
 
           <div className={hstack({ gap: "3", justify: "flex-end", flexWrap: "wrap" })}>
             {sent && (
-              <span className={css({ fontSize: "xs", color: "textMuted", fontFamily: "mono" })}>
+              <span
+                aria-live="polite"
+                className={css({ fontSize: "xs", color: "textMuted", fontFamily: "mono" })}
+              >
                 {formatBytes(sent.loaded)} of {formatBytes(sent.total)}
               </span>
             )}
@@ -516,7 +519,14 @@ export function ImportPage() {
           </div>
 
           {sent && (
-            <span className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}>
+            <span
+              className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}
+              role="progressbar"
+              aria-valuenow={sent.total > 0 ? Math.round((sent.loaded / sent.total) * 100) : 0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Upload progress"
+            >
               <span
                 className={css({ display: "block", h: "full", bg: "accent", transition: "width 0.2s ease" })}
                 style={{ width: `${sent.total > 0 ? (sent.loaded / sent.total) * 100 : 0}%` }}
@@ -594,7 +604,12 @@ function JobRow({ job }: { job: ImportJob }) {
           ) : (
             <Loader2
               size={17}
-              className={css({ color: "accent", flexShrink: 0, animation: "spin 0.9s linear infinite" })}
+              className={css({
+                color: "accent",
+                flexShrink: 0,
+                animation: "spin 0.9s linear infinite",
+                _motionReduce: { animation: "none" },
+              })}
             />
           )}
           {/* A job exists before the server has read the options part, so one
@@ -605,7 +620,7 @@ function JobRow({ job }: { job: ImportJob }) {
         </div>
 
         <div className={hstack({ gap: "3", flexShrink: 0 })}>
-          <span className={css({ fontSize: "xs", color: "textMuted" })}>
+          <span aria-live="polite" className={css({ fontSize: "xs", color: "textMuted" })}>
             {STAGE_LABEL[job.stage] ?? job.stage}
           </span>
           {!done && !failed && (
@@ -630,7 +645,14 @@ function JobRow({ job }: { job: ImportJob }) {
       </div>
 
       {!done && !failed && (
-        <span className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}>
+        <span
+          className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${job.name || "Untitled import"} progress`}
+        >
           <span
             className={css({ display: "block", h: "full", bg: "accent", transition: "width 0.3s ease" })}
             style={{ width: `${pct}%` }}
@@ -843,10 +865,10 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className={vstack({ gap: "1.5", alignItems: "stretch" })}>
+    <label className={vstack({ gap: "1.5", alignItems: "stretch" })}>
       <span className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>{label}</span>
       {children}
       <span className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.5" })}>{hint}</span>
-    </div>
+    </label>
   );
 }

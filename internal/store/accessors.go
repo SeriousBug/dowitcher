@@ -369,9 +369,16 @@ func (s *Store) DeleteUserSessions(userID string) error {
 //
 // An empty keepToken matches no row and so revokes everything, which is the
 // right answer for a caller that holds no session of its own to preserve.
-func (s *Store) DeleteUserSessionsExcept(userID, keepToken string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepToken)
-	return err
+//
+// The count of revoked sessions is returned because "signed out 3 other
+// devices" is the only feedback the user gets that the button did anything —
+// nothing else about their own session changes.
+func (s *Store) DeleteUserSessionsExcept(userID, keepToken string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepToken)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // DeleteExpiredSessions prunes sessions past their TTL.

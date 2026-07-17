@@ -538,7 +538,8 @@ export function ReaderPage({ id }: { id: string }) {
 
       <button
         onClick={guard(() => (chromeVisible ? setChromeVisible(false) : showChrome()))}
-        aria-label="Show reader controls"
+        aria-label={chromeVisible ? "Hide reader controls" : "Show reader controls"}
+        title={chromeVisible ? "Hide reader controls" : "Show reader controls"}
         className={css({
           position: "fixed",
           left: "33%",

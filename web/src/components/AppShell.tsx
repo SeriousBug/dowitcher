@@ -116,6 +116,8 @@ function ScanStatus() {
     const pct = library.total > 0 ? Math.round((library.done / library.total) * 100) : 0;
     return (
       <div
+        role="status"
+        aria-live="polite"
         className={vstack({
           gap: "2",
           alignItems: "stretch",
@@ -130,7 +132,14 @@ function ScanStatus() {
           <Loader2 size={13} className={css({ animation: "spin 0.9s linear infinite", color: "accent" })} />
           Reading your shelves…
         </span>
-        <span className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}>
+        <span
+          className={css({ h: "3px", borderRadius: "full", bg: "ink.750", overflow: "hidden" })}
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="Library scan progress"
+        >
           <span
             className={css({ display: "block", h: "full", bg: "accent", transition: "width 0.3s ease" })}
             style={{ width: `${pct}%` }}
@@ -174,6 +183,7 @@ function UserStrip({
   return (
     <div className={hstack({ gap: "2", minW: "0" })}>
       <span
+        aria-hidden
         className={flex({
           align: "center",
           justify: "center",
@@ -191,6 +201,7 @@ function UserStrip({
       >
         {user.name.charAt(0).toUpperCase()}
       </span>
+      {compact && <span className={css({ srOnly: true })}>{user.name}</span>}
       {!compact && (
         <span
           className={css({
@@ -265,7 +276,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <ConnectionLight />
           </div>
 
-          <nav className={vstack({ gap: "1", alignItems: "stretch" })}>
+          <nav aria-label="Main" className={vstack({ gap: "1", alignItems: "stretch" })}>
             {NAV.map((item) => (
               <NavItem key={item.to} {...item} />
             ))}
@@ -315,6 +326,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
 
         <nav
+          aria-label="Sections"
           className={hstack({
             display: { base: "flex", md: "none" },
             justify: "space-around",
