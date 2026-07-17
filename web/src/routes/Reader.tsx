@@ -1,53 +1,372 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { BookX, ChevronLeft, ChevronRight, X } from "lucide-react";
-import { css } from "styled-system/css";
-import { flex, hstack, vstack } from "styled-system/patterns";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { BookX, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { css, cx } from "styled-system/css";
+import { flex, vstack } from "styled-system/patterns";
+import { ReaderPageImage, pageSrc } from "../components/ReaderPageImage";
+import { ReaderResumeBanner } from "../components/ReaderResumeBanner";
+import { ReaderScrubber } from "../components/ReaderScrubber";
+import { ReaderToolbar } from "../components/ReaderToolbar";
+import { http, HttpError } from "../api/http";
+import { buildSpreads, spreadIndexOf } from "../lib/ReaderLayout";
+import { useFitMode, useRtl, useSpread } from "../lib/ReaderPrefs";
 import { comicLabel } from "../lib/format";
-import type { ComicDetail } from "../api/generated";
+import type { ComicDetail, Progress, ProgressRequest } from "../api/generated";
 
-// TODO(Reader): wire to GET /api/comics/{id} for the ComicDetail, page images
-// from GET /api/comics/{id}/pages/{index}, and PUT /api/comics/{id}/progress on
-// every page turn (debounced — a fast reader flips faster than the network).
-// Seed `page` from detail.progress?.page so a comic reopens where it was left.
-const detail: ComicDetail | null = null;
+/** Long enough that a flip-through collapses to one write, short enough that
+ *  picking up your phone mid-page still saves. */
+const PROGRESS_DEBOUNCE_MS = 1200;
+const CHROME_IDLE_MS = 2500;
+const SWIPE_MIN_PX = 48;
 
-/**
- * Fullscreen and chromeless: no shell, no sidebar, nothing but the page. The
- * controls fade out while reading and come back on hover or keyboard, because
- * anything permanently on screen is something you stop seeing but still lose
- * pixels to.
- */
+// Pre-built class names — Panda extracts at build time and cannot see a style
+// object reached through a variable, so each variant is a finished class.
+const SURFACE_FIT = {
+  // Nothing to scroll: the page is already inside the viewport.
+  height: css({ minH: "100dvh", overflow: "hidden" }),
+  // The document scrolls, not an inner box. Fixed chrome sits above it and the
+  // wheel/touch still reaches the viewport underneath, which an inner
+  // overflow container would swallow.
+  width: css({ minH: "100dvh" }),
+  original: css({ minH: "100dvh", w: "max-content", minW: "100%" }),
+};
+
+const SPREAD_DIR = {
+  ltr: css({ flexDirection: "row" }),
+  // The first page of the pair belongs on the right when reading right-to-left.
+  rtl: css({ flexDirection: "row-reverse" }),
+};
+
 export function ReaderPage({ id }: { id: string }) {
+  const queryClient = useQueryClient();
+
+  const { data: detail, isLoading } = useQuery({
+    queryKey: ["comic", id],
+    queryFn: () => http.get<ComicDetail>(`/api/comics/${id}`),
+    retry: (count, err) => !(err instanceof HttpError && err.status < 500) && count < 2,
+    // The page list and the file behind it don't change while you read. Refetching
+    // on tab focus would only ever re-race our own progress writes.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+
+  const [fit, setFit] = useFitMode();
+  const [spread, setSpread] = useSpread();
+  const [rtl, setRtl] = useRtl(id);
+
   const [page, setPage] = useState(0);
   const [chromeVisible, setChromeVisible] = useState(true);
+  const [chromePinned, setChromePinned] = useState(false);
+  const [activity, setActivity] = useState(0);
+  const [resumeOffer, setResumeOffer] = useState<number | null>(null);
+  const [measuredLandscape, setMeasuredLandscape] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
 
-  const pageCount = detail?.pages.length ?? 0;
+  const pages = useMemo(() => detail?.pages ?? [], [detail]);
+  const pageCount = pages.length;
 
-  const turn = useCallback(
-    (delta: number) => {
-      setPage((p) => Math.min(Math.max(p + delta, 0), Math.max(pageCount - 1, 0)));
+  const isLandscape = useCallback(
+    (index: number) => {
+      const p = pages[index];
+      // AVIF pages can reach the store with no dimensions because the decoder
+      // never reported any. Assume portrait — overwhelmingly the common case —
+      // and let the measurement below correct the pairing once the real bytes
+      // land, rather than guessing landscape and splitting the book.
+      if (p?.width && p?.height) return p.width > p.height;
+      return measuredLandscape.has(index);
     },
-    [pageCount],
+    [pages, measuredLandscape],
+  );
+
+  const spreads = useMemo(
+    () => buildSpreads(pageCount, isLandscape, spread),
+    [pageCount, isLandscape, spread],
+  );
+  const spreadIndex = spreadIndexOf(spreads, page);
+  const visiblePages = spreads[spreadIndex] ?? [];
+
+  const onNaturalSize = useCallback(
+    (index: number, width: number, height: number) => {
+      if (width <= height) return;
+      setMeasuredLandscape((prev) => {
+        if (prev.has(index)) return prev;
+        const next = new Set(prev);
+        next.add(index);
+        return next;
+      });
+    },
+    [],
+  );
+
+  // --- progress -----------------------------------------------------------
+
+  const saveProgress = useMutation({
+    mutationFn: (body: ProgressRequest) =>
+      http.put<Progress>(`/api/comics/${id}/progress`, { ...body }),
+    onSuccess: (progress) => {
+      // Patch the cache in place. Invalidating would refetch ComicDetail on every
+      // page turn, and the arriving payload carries a `progress` a second or two
+      // behind where the reader now is — the reader would spend the whole book
+      // fighting its own writes.
+      queryClient.setQueryData<ComicDetail>(["comic", id], (prev) =>
+        prev ? { ...prev, progress } : prev,
+      );
+    },
+  });
+
+  const pendingRef = useRef<ProgressRequest | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const mutateRef = useRef(saveProgress.mutate);
+  mutateRef.current = saveProgress.mutate;
+
+  const flushProgress = useCallback(
+    (leaving = false) => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      const body = pendingRef.current;
+      if (!body) return;
+      pendingRef.current = null;
+      if (leaving) {
+        // The tab is being torn down; a normal fetch dies with it and the last
+        // few pages of a session are exactly the ones worth keeping. keepalive
+        // hands the request to the browser to finish without us.
+        http.put(`/api/comics/${id}/progress`, { ...body }, { keepalive: true }).catch(() => {});
+        return;
+      }
+      mutateRef.current(body);
+    },
+    [id],
+  );
+
+  const queueProgress = useCallback(
+    (body: ProgressRequest) => {
+      pendingRef.current = body;
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => flushProgress(), PROGRESS_DEBOUNCE_MS);
+    },
+    [flushProgress],
   );
 
   useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushProgress(true);
+    };
+    const onPageHide = () => flushProgress(true);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      flushProgress(true);
+    };
+  }, [flushProgress]);
+
+  // --- navigation ---------------------------------------------------------
+
+  const jump = useCallback(
+    (target: number) => {
+      if (pageCount === 0) return;
+      const next = Math.min(Math.max(target, 0), pageCount - 1);
+      setPage(next);
+      // Reaching the last *spread* finishes the book — in two-page mode the final
+      // turn can land on pageCount-2 and never touch the last index.
+      const lastStart = spreads[spreads.length - 1]?.[0] ?? pageCount - 1;
+      queueProgress({ page: next, completed: next >= lastStart });
+    },
+    [pageCount, spreads, queueProgress],
+  );
+
+  // Reading order: +1 is always "onward", whichever way the book runs.
+  const turnReading = useCallback(
+    (dir: 1 | -1) => {
+      const target = spreads[spreadIndex + dir];
+      if (!target) return;
+      jump(target[0]!);
+    },
+    [spreads, spreadIndex, jump],
+  );
+
+  // Spatial input: +1 means "rightward". A right-to-left comic puts the next
+  // page on the left, so the mapping flips here and nowhere else.
+  const turnSpatial = useCallback(
+    (dir: 1 | -1) => turnReading(rtl ? ((dir * -1) as 1 | -1) : dir),
+    [turnReading, rtl],
+  );
+
+  const showChrome = useCallback(() => {
+    setChromeVisible(true);
+    setActivity((n) => n + 1);
+  }, []);
+
+  // Idle hands mean reading. Anything permanently on screen is something you
+  // stop seeing but keep paying pixels for.
+  useEffect(() => {
+    if (!chromeVisible || chromePinned || resumeOffer !== null) return;
+    const timer = window.setTimeout(() => setChromeVisible(false), CHROME_IDLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [chromeVisible, chromePinned, resumeOffer, activity]);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "ArrowRight" || e.key === " ") turn(1);
-      if (e.key === "ArrowLeft") turn(-1);
-      // Any key means the reader is present; show them where they are.
-      setChromeVisible(true);
+      // The scrubber owns the arrows while it has focus.
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+        return;
+      }
+      switch (e.key) {
+        case "ArrowRight":
+          turnSpatial(1);
+          break;
+        case "ArrowLeft":
+          turnSpatial(-1);
+          break;
+        case "PageDown":
+        case "j":
+          turnReading(1);
+          break;
+        case "PageUp":
+        case "k":
+          turnReading(-1);
+          break;
+        case " ":
+          e.preventDefault();
+          turnReading(e.shiftKey ? -1 : 1);
+          break;
+        case "Home":
+          jump(0);
+          break;
+        case "End":
+          jump(pageCount - 1);
+          break;
+        default:
+          return;
+      }
+      // A key press means the reader is here; remind them where they are.
+      showChrome();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [turn]);
+  }, [turnSpatial, turnReading, jump, pageCount, showChrome]);
 
-  // Idle hands mean reading. Pull the chrome back after a beat of stillness.
+  // A fit-width page is taller than the viewport, so a turn that kept the scroll
+  // position would drop you into the middle of the new page.
   useEffect(() => {
-    if (!chromeVisible) return;
-    const timer = window.setTimeout(() => setChromeVisible(false), 2600);
-    return () => window.clearTimeout(timer);
-  }, [chromeVisible, page]);
+    if (fit !== "height") window.scrollTo(0, 0);
+  }, [page, fit]);
+
+  // --- preloading ---------------------------------------------------------
+
+  const preloadTargets = useMemo(() => {
+    // Two spreads ahead is 2-4 pages in spread mode; three single pages ahead is
+    // the same reach. One behind covers the back-up. Anything more and a 120-page
+    // 1GB comic starts prefetching itself into the reader's disk cache.
+    const ahead = spread ? 2 : 3;
+    const wanted: number[] = [];
+    for (let i = 1; i <= ahead; i++) wanted.push(...(spreads[spreadIndex + i] ?? []));
+    wanted.push(...(spreads[spreadIndex - 1] ?? []));
+    return wanted;
+  }, [spreads, spreadIndex, spread]);
+
+  const preloadRef = useRef(new Map<number, HTMLImageElement>());
+  useEffect(() => {
+    const cache = preloadRef.current;
+    for (const [index, img] of cache) {
+      if (preloadTargets.includes(index)) continue;
+      // Dropping src aborts the in-flight decode. After a scrubber jump the old
+      // prefetches are dead weight competing for bandwidth with the page the
+      // reader is actually staring at.
+      img.src = "";
+      cache.delete(index);
+    }
+    for (const index of preloadTargets) {
+      if (cache.has(index)) continue;
+      const img = new Image();
+      img.fetchPriority = "low";
+      img.src = pageSrc(id, index);
+      cache.set(index, img);
+    }
+  }, [id, preloadTargets]);
+
+  useEffect(() => {
+    const cache = preloadRef.current;
+    return () => {
+      for (const img of cache.values()) img.src = "";
+      cache.clear();
+    };
+  }, []);
+
+  // Offer the saved position exactly once per comic, and never for a finished
+  // one — reopening a comic you completed means starting it again.
+  const offeredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!detail || offeredFor.current === id) return;
+    offeredFor.current = id;
+    setPage(0);
+    const p = detail.progress;
+    if (p && !p.completed && p.page > 0 && p.page < detail.pages.length) setResumeOffer(p.page);
+  }, [detail, id]);
+
+  // --- touch --------------------------------------------------------------
+
+  const touchRef = useRef<{ x: number; y: number } | null>(null);
+  const swipedRef = useRef(false);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    // Two fingers is a pinch-zoom; leave it entirely to the browser.
+    if (e.touches.length !== 1) {
+      touchRef.current = null;
+      return;
+    }
+    const t = e.touches[0]!;
+    touchRef.current = { x: t.clientX, y: t.clientY };
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touchRef.current;
+    touchRef.current = null;
+    if (!start || e.changedTouches.length !== 1) return;
+    const t = e.changedTouches[0]!;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    // Bias to vertical: on a fit-width page a scroll that drifts sideways must
+    // not turn the page out from under the reader.
+    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    // The tap zone underneath would otherwise turn the page a second time.
+    swipedRef.current = true;
+    window.setTimeout(() => {
+      swipedRef.current = false;
+    }, 0);
+    // The page follows the finger: dragging left pulls in whatever sits to the
+    // right, which is the next page only when the book runs left-to-right.
+    turnSpatial(dx < 0 ? 1 : -1);
+  };
+
+  const guard = (fn: () => void) => () => {
+    if (swipedRef.current) return;
+    fn();
+  };
+
+  // --- render -------------------------------------------------------------
+
+  if (isLoading) {
+    return (
+      <div className={flex({ align: "center", justify: "center", minH: "100dvh", bg: "reader" })}>
+        <Loader2
+          size={24}
+          className={css({
+            color: "ink.600",
+            animation: "spin 0.9s linear infinite",
+            _motionReduce: { animation: "none" },
+          })}
+        />
+        <span className={css({ srOnly: true })}>Loading comic</span>
+      </div>
+    );
+  }
 
   if (!detail) {
     return (
@@ -56,7 +375,7 @@ export function ReaderPage({ id }: { id: string }) {
           gap: "5",
           alignItems: "center",
           justify: "center",
-          minH: "100vh",
+          minH: "100dvh",
           bg: "reader",
           p: "6",
           textAlign: "center",
@@ -64,12 +383,9 @@ export function ReaderPage({ id }: { id: string }) {
       >
         <BookX size={34} className={css({ color: "ink.600" })} strokeWidth={1.5} />
         <div className={vstack({ gap: "1.5", maxW: "sm" })}>
-          <h1 className={css({ fontSize: "lg", fontWeight: "bold" })}>
-            This comic isn't here
-          </h1>
+          <h1 className={css({ fontSize: "lg", fontWeight: "bold" })}>This comic isn&apos;t here</h1>
           <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
-            It may have been removed from the library, or the file has gone
-            missing from disk.
+            It may have been removed from the library, or the file has gone missing from disk.
           </p>
         </div>
         <Link
@@ -94,150 +410,140 @@ export function ReaderPage({ id }: { id: string }) {
     );
   }
 
-  const current = detail.pages[page];
+  const atStart = spreadIndex === 0;
+  const atEnd = spreadIndex >= spreads.length - 1;
+  const canGoLeft = rtl ? !atEnd : !atStart;
+  const canGoRight = rtl ? !atStart : !atEnd;
 
   return (
     <div
-      onMouseMove={() => setChromeVisible(true)}
-      className={css({
-        position: "relative",
-        minH: "100vh",
-        bg: "reader",
-        cursor: chromeVisible ? "default" : "none",
-      })}
+      onMouseMove={showChrome}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+      className={cx(
+        css({
+          position: "relative",
+          bg: "reader",
+          cursor: chromeVisible ? "default" : "none",
+        }),
+        SURFACE_FIT[fit],
+      )}
     >
-      <header
-        className={hstack({
-          justify: "space-between",
-          gap: "4",
-          position: "fixed",
-          top: "0",
-          left: "0",
-          right: "0",
-          zIndex: "30",
-          px: "4",
-          h: "14",
-          bg: "linear-gradient(to bottom, rgba(10, 8, 9, 0.95), transparent)",
-          opacity: chromeVisible ? 1 : 0,
-          transition: "opacity 0.25s ease",
-          pointerEvents: chromeVisible ? "auto" : "none",
-        })}
+      <ReaderToolbar
+        title={comicLabel(detail.comic)}
+        page={page}
+        pageCount={pageCount}
+        fit={fit}
+        onFit={setFit}
+        spread={spread}
+        onSpread={setSpread}
+        rtl={rtl}
+        onRtl={setRtl}
+        visible={chromeVisible}
+      />
+
+      <div
+        className={cx(
+          flex({ align: "center", justify: "center", minH: "100dvh", gap: "0" }),
+          SPREAD_DIR[rtl ? "rtl" : "ltr"],
+        )}
       >
-        <Link
-          to="/"
-          aria-label="Close the reader"
-          title="Close the reader"
-          className={flex({
-            align: "center",
-            justify: "center",
-            w: "9",
-            h: "9",
-            borderRadius: "md",
-            color: "ink.200",
-            flexShrink: 0,
-            _hover: { bg: "rgba(255, 255, 255, 0.08)", color: "text" },
-          })}
-        >
-          <X size={19} />
-        </Link>
-
-        <span
-          className={css({
-            fontSize: "sm",
-            fontWeight: "semibold",
-            color: "ink.200",
-            truncate: true,
-          })}
-        >
-          {comicLabel(detail.comic)}
-        </span>
-
-        <span
-          className={css({
-            fontFamily: "mono",
-            fontSize: "xs",
-            color: "ink.400",
-            flexShrink: 0,
-          })}
-        >
-          {page + 1} / {pageCount}
-        </span>
-      </header>
-
-      <div className={flex({ align: "center", justify: "center", minH: "100vh" })}>
-        <img
-          src={`/api/comics/${id}/pages/${page}`}
-          alt={`Page ${page + 1}`}
-          width={current?.width}
-          height={current?.height}
-          className={css({ maxW: "full", maxH: "100vh", objectFit: "contain", display: "block" })}
-        />
+        {visiblePages.map((index) => (
+          <ReaderPageImage
+            key={index}
+            comicId={id}
+            index={index}
+            page={pages[index]}
+            fit={fit}
+            panes={visiblePages.length === 2 ? 2 : 1}
+            onNaturalSize={onNaturalSize}
+          />
+        ))}
       </div>
 
-      {/* Half the screen each: tap anywhere to turn, no aiming required. */}
+      {/* Thirds: the outer two turn, the middle one summons the chrome. Aiming for
+          a small control in the dark is the thing this replaces. */}
       <button
-        onClick={() => turn(-1)}
-        disabled={page === 0}
-        aria-label="Previous page"
-        title="Previous page"
+        onClick={guard(() => turnSpatial(-1))}
+        disabled={!canGoLeft}
+        aria-label={rtl ? "Next page" : "Previous page"}
+        title={rtl ? "Next page" : "Previous page"}
         className={flex({
           position: "fixed",
           left: "0",
           top: "0",
           bottom: "0",
-          w: "35%",
+          w: "33%",
           align: "center",
           justify: "flex-start",
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && page > 0 ? 0.75 : 0,
+          opacity: chromeVisible && canGoLeft ? 0.7 : 0,
           transition: "opacity 0.25s ease",
+          _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
         })}
       >
         <ChevronLeft size={38} strokeWidth={1.5} />
       </button>
+
       <button
-        onClick={() => turn(1)}
-        disabled={page >= pageCount - 1}
-        aria-label="Next page"
-        title="Next page"
+        onClick={guard(() => (chromeVisible ? setChromeVisible(false) : showChrome()))}
+        aria-label="Show reader controls"
+        className={css({
+          position: "fixed",
+          left: "33%",
+          right: "33%",
+          top: "0",
+          bottom: "0",
+          cursor: "pointer",
+        })}
+      />
+
+      <button
+        onClick={guard(() => turnSpatial(1))}
+        disabled={!canGoRight}
+        aria-label={rtl ? "Previous page" : "Next page"}
+        title={rtl ? "Previous page" : "Next page"}
         className={flex({
           position: "fixed",
           right: "0",
           top: "0",
           bottom: "0",
-          w: "65%",
+          w: "33%",
           align: "center",
           justify: "flex-end",
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && page < pageCount - 1 ? 0.75 : 0,
+          opacity: chromeVisible && canGoRight ? 0.7 : 0,
           transition: "opacity 0.25s ease",
+          _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
         })}
       >
         <ChevronRight size={38} strokeWidth={1.5} />
       </button>
 
-      <div
-        className={css({
-          position: "fixed",
-          left: "0",
-          right: "0",
-          bottom: "0",
-          zIndex: "30",
-          h: "3px",
-          bg: "rgba(255, 255, 255, 0.08)",
-        })}
-      >
-        <span
-          className={css({ display: "block", h: "full", bg: "accent", transition: "width 0.2s ease" })}
-          style={{ width: `${pageCount ? ((page + 1) / pageCount) * 100 : 0}%` }}
+      {resumeOffer !== null && (
+        <ReaderResumeBanner
+          page={resumeOffer}
+          onResume={() => {
+            jump(resumeOffer);
+            setResumeOffer(null);
+          }}
+          onDismiss={() => setResumeOffer(null)}
         />
-      </div>
+      )}
+
+      <ReaderScrubber
+        page={page}
+        pageCount={pageCount}
+        onScrub={jump}
+        onDraggingChange={setChromePinned}
+        visible={chromeVisible}
+      />
     </div>
   );
 }

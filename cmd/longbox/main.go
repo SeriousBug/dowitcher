@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/SeriousBug/longbox/internal/api"
 	"github.com/SeriousBug/longbox/internal/auth"
+	"github.com/SeriousBug/longbox/internal/imports"
+	"github.com/SeriousBug/longbox/internal/library"
 	"github.com/SeriousBug/longbox/internal/server"
 	"github.com/SeriousBug/longbox/internal/store"
 )
@@ -27,6 +31,19 @@ func main() {
 	rpID := env("LONGBOX_RP_ID", "localhost")
 	libraryRoot := env("LONGBOX_LIBRARY", "/library")
 	dataDir := env("LONGBOX_DATA", "/data")
+
+	// A rescan of an unchanged library costs microseconds — the content hash
+	// reads the zip's central directory, not its contents — so the sweep is
+	// cheap enough to run often. It exists to catch what fsnotify misses: a
+	// dropped event, an NFS mount, a change made while the process was down.
+	sweepInterval := 15 * time.Minute
+	if v := os.Getenv("LONGBOX_SWEEP_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Fatalf("LONGBOX_SWEEP_INTERVAL: %v", err)
+		}
+		sweepInterval = d
+	}
 
 	// Read the bypass before anything else: if it is set on an https origin the
 	// process must die here, not after it has opened a listener.
@@ -64,16 +81,56 @@ func main() {
 		log.Print(devAuth.Banner())
 	}
 
+	uploadsDir := filepath.Join(dataDir, "uploads")
+	coverCacheDir := filepath.Join(dataDir, "covers")
+
 	srv := server.New(st, authMgr, server.Config{
 		RPID:    rpID,
 		Origin:  origin,
 		Secure:  strings.HasPrefix(origin, "https://"),
 		DevAuth: devAuth,
+
+		LibraryRoot:   libraryRoot,
+		UploadsDir:    uploadsDir,
+		CoverCacheDir: coverCacheDir,
+		// Imports stage a whole folder of images before packing, which routinely
+		// runs to gigabytes. Keeping the staging area under the data volume
+		// rather than the OS temp dir avoids filling a small tmpfs mid-import.
+		ImportTempDir: filepath.Join(dataDir, "tmp"),
 	})
 	log.Printf("library root %s, data dir %s", libraryRoot, dataDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Constructing the manager is also the orphan-job sweep: a job still marked
+	// running in the DB is a lie left by a crash, since its goroutine died with
+	// the process.
+	im, err := imports.NewManager(st, srv.Hub(), imports.ManagerConfig{
+		UploadsDir: uploadsDir,
+		ReportDir:  filepath.Join(dataDir, "imports"),
+	})
+	if err != nil {
+		log.Fatalf("import manager: %v", err)
+	}
+	srv.SetImporter(im)
+
+	lib := library.New(st, library.Config{
+		Root:          libraryRoot,
+		DataDir:       dataDir,
+		SweepInterval: sweepInterval,
+	}, func(s api.LibraryStatus) {
+		srv.Hub().Broadcast(api.WSMessage{Type: api.WSTypeLibrary, Library: &s})
+	})
+	srv.SetLibrary(lib)
+
+	// Scan before serving so a fresh instance comes up populated. A missing or
+	// empty root is not fatal: the server still has to come up to serve the
+	// enrollment link and let someone fix the mount.
+	if err := lib.Scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("warning: initial scan: %v", err)
+	}
+	go lib.Run(ctx)
 
 	httpServer := &http.Server{
 		Addr:    addr,

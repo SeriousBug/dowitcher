@@ -1,20 +1,20 @@
-import { useState } from "react";
-import { Library as LibraryIcon, Search, Upload } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import { Library as LibraryIcon, Search, Tag as TagIcon, Upload, X } from "lucide-react";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { css } from "styled-system/css";
-import { grid, hstack, vstack } from "styled-system/patterns";
-import { ComicCard } from "../components/ComicCard";
+import { hstack, vstack } from "styled-system/patterns";
+import { Button } from "../components/Button";
+import { ComicGrid, ComicGridSkeleton, ComicTile, TileButton } from "../components/ComicGrid";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
+import { TagEditorDialog } from "../components/TagEditorDialog";
 import { useLiveData } from "../live/LiveData";
+import { wsClient } from "../api/ws";
+import { HttpError } from "../api/http";
+import { COMICS_PAGE_SIZE, fetchComics } from "../api/comics";
+import { comicLabel } from "../lib/format";
 import type { Comic, Progress } from "../api/generated";
-
-// TODO(Library): wire to GET /api/comics (and GET /api/progress for the bars).
-// The comics list also arrives unprompted over the WS as a `comics` message
-// whenever the watcher notices a change, so whatever query lands here should be
-// seeded from useLiveData() rather than polling.
-const comics: Comic[] = [];
-const progressByComic = new Map<string, Progress>();
 
 type Sort = "added" | "title" | "series";
 
@@ -24,14 +24,85 @@ const SORTS: { value: Sort; label: string }[] = [
   { value: "series", label: "Series" },
 ];
 
+/** Sorting runs over what has been loaded, so it never waits on a round trip. */
+function sortComics(comics: Comic[], sort: Sort): Comic[] {
+  const next = [...comics];
+  if (sort === "title") {
+    next.sort((a, b) => comicLabel(a).localeCompare(comicLabel(b)));
+  } else if (sort === "series") {
+    next.sort(
+      (a, b) =>
+        // Untitled series sort last rather than first: a loose one-shot is not
+        // the thing anyone opened this list to find.
+        (a.series ?? "￿").localeCompare(b.series ?? "￿") ||
+        // Issue numbers are strings because "12AU" and "0" both exist, but they
+        // are numbers often enough that text order putting #10 before #2 reads
+        // as broken.
+        (Number(a.number) || 0) - (Number(b.number) || 0) ||
+        a.title.localeCompare(b.title),
+    );
+  } else {
+    next.sort((a, b) => b.addedAt - a.addedAt);
+  }
+  return next;
+}
+
 export function LibraryPage() {
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<Sort>("added");
+  const { tag, q } = useSearch({ from: "/" });
+  const navigate = useNavigate({ from: "/" });
+  const queryClient = useQueryClient();
   const { library } = useLiveData();
 
-  const shown = comics.filter((c) =>
-    query ? `${c.title} ${c.series ?? ""}`.toLowerCase().includes(query.toLowerCase()) : true,
+  const [draft, setDraft] = useState(q ?? "");
+  const [sort, setSort] = useState<Sort>("added");
+  const [editing, setEditing] = useState<Comic | null>(null);
+
+  // Typing shouldn't fire a request per keystroke, and replace: true keeps it
+  // from stacking a history entry per keystroke either.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const next = draft.trim() || undefined;
+      if (next !== q) navigate({ search: (prev) => ({ ...prev, q: next }), replace: true });
+    }, 250);
+    return () => clearTimeout(id);
+  }, [draft, q, navigate]);
+
+  // The watcher announces a changed shelf over the stream. Refetching on that
+  // signal is what fills the grid in front of you as a scan runs, without the
+  // page asking the server every few seconds whether anything happened yet.
+  useEffect(
+    () => wsClient.subscribe("comics", () => {
+      queryClient.invalidateQueries({ queryKey: ["comics"] });
+    }),
+    [queryClient],
   );
+
+  const comicsQuery = useInfiniteQuery({
+    queryKey: ["comics", { q: q ?? "", tag: tag ?? "" }],
+    queryFn: ({ pageParam }) => fetchComics({ q, tag }, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (last, all) => {
+      const loaded = all.reduce((n, p) => n + p.comics.length, 0);
+      if (last.total !== null) return loaded < last.total ? loaded : undefined;
+      // No total from the server: a short page is the end of the shelf.
+      return last.comics.length < COMICS_PAGE_SIZE ? undefined : loaded;
+    },
+  });
+
+  const comics = useMemo(
+    () => sortComics(comicsQuery.data?.pages.flatMap((p) => p.comics) ?? [], sort),
+    [comicsQuery.data, sort],
+  );
+
+  const progress = useMemo(() => {
+    const merged = new Map<string, Progress>();
+    for (const page of comicsQuery.data?.pages ?? []) {
+      for (const [id, p] of page.progress) merged.set(id, p);
+    }
+    return merged;
+  }, [comicsQuery.data]);
+
+  const filtered = Boolean(q || tag);
 
   return (
     <div className={vstack({ gap: "7", alignItems: "stretch" })}>
@@ -62,8 +133,8 @@ export function LibraryPage() {
         >
           <Search size={16} className={css({ color: "ink.500", flexShrink: 0 })} />
           <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
             placeholder="Search by title or series"
             aria-label="Search the library"
             className={css({
@@ -76,9 +147,33 @@ export function LibraryPage() {
               _focus: { outline: "none" },
             })}
           />
+          {draft && (
+            <button
+              onClick={() => setDraft("")}
+              aria-label="Clear the search"
+              title="Clear the search"
+              className={css({
+                display: "flex",
+                color: "ink.500",
+                cursor: "pointer",
+                _hover: { color: "text" },
+              })}
+            >
+              <X size={15} />
+            </button>
+          )}
         </label>
 
-        <div className={hstack({ gap: "1", p: "1", borderRadius: "md", bg: "surface", borderWidth: "1px", borderColor: "border" })}>
+        <div
+          className={hstack({
+            gap: "1",
+            p: "1",
+            borderRadius: "md",
+            bg: "surface",
+            borderWidth: "1px",
+            borderColor: "border",
+          })}
+        >
           {SORTS.map((s) => (
             <button
               key={s.value}
@@ -101,9 +196,77 @@ export function LibraryPage() {
         </div>
       </div>
 
-      {shown.length === 0 ? (
-        query ? (
-          <EmptyState icon={Search} title={`Nothing matches “${query}”`}>
+      {tag && (
+        <div className={hstack({ gap: "2.5", flexWrap: "wrap" })}>
+          <span className={css({ fontSize: "sm", color: "textMuted" })}>Showing only</span>
+          <span
+            className={hstack({
+              gap: "1.5",
+              pl: "3",
+              pr: "1.5",
+              py: "1",
+              borderRadius: "full",
+              bg: "accentQuiet",
+              borderWidth: "1px",
+              borderColor: "magenta.900",
+              color: "magenta.300",
+              fontSize: "xs",
+              fontWeight: "bold",
+            })}
+          >
+            <TagIcon size={12} />
+            {tag}
+            <button
+              onClick={() => navigate({ search: (prev) => ({ ...prev, tag: undefined }) })}
+              aria-label={`Stop filtering by ${tag}`}
+              title={`Stop filtering by ${tag}`}
+              className={css({
+                display: "flex",
+                p: "0.5",
+                borderRadius: "full",
+                color: "magenta.300",
+                cursor: "pointer",
+                _hover: { bg: "magenta.900", color: "text" },
+              })}
+            >
+              <X size={12} />
+            </button>
+          </span>
+        </div>
+      )}
+
+      {comicsQuery.isLoading ? (
+        <ComicGridSkeleton />
+      ) : comicsQuery.isError ? (
+        <EmptyState
+          icon={LibraryIcon}
+          title="Couldn't reach your library"
+          action={
+            <Button variant="primary" onClick={() => comicsQuery.refetch()}>
+              Try again
+            </Button>
+          }
+        >
+          {comicsQuery.error instanceof HttpError
+            ? comicsQuery.error.message
+            : "The server didn't answer. It may still be starting up."}
+        </EmptyState>
+      ) : comics.length === 0 ? (
+        filtered ? (
+          <EmptyState
+            icon={Search}
+            title={q ? `Nothing matches “${q}”` : `Nothing tagged “${tag}”`}
+            action={
+              <Button
+                onClick={() => {
+                  setDraft("");
+                  navigate({ search: {} });
+                }}
+              >
+                Clear the filters
+              </Button>
+            }
+          >
             Try a shorter search, or check the spelling of the series name.
           </EmptyState>
         ) : (
@@ -140,17 +303,44 @@ export function LibraryPage() {
           </EmptyState>
         )
       ) : (
-        <div
-          className={grid({
-            columns: { base: 2, sm: 3, md: 4, lg: 5, xl: 6 },
-            gap: { base: "4", md: "5" },
-          })}
-        >
-          {shown.map((comic) => (
-            <ComicCard key={comic.id} comic={comic} progress={progressByComic.get(comic.id)} />
-          ))}
-        </div>
+        <>
+          <ComicGrid>
+            {comics.map((comic) => (
+              <ComicTile
+                key={comic.id}
+                comic={comic}
+                progress={progress.get(comic.id)}
+                actions={
+                  <TileButton
+                    label={`Edit tags on ${comicLabel(comic)}`}
+                    onClick={() => setEditing(comic)}
+                  >
+                    <TagIcon size={14} />
+                  </TileButton>
+                }
+              />
+            ))}
+          </ComicGrid>
+
+          {comicsQuery.hasNextPage && (
+            <Button
+              onClick={() => comicsQuery.fetchNextPage()}
+              busy={comicsQuery.isFetchingNextPage}
+              className={css({ alignSelf: "center" })}
+            >
+              Show more
+            </Button>
+          )}
+        </>
       )}
+
+      <TagEditorDialog
+        comic={editing}
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+      />
     </div>
   );
 }

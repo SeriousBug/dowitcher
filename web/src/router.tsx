@@ -52,6 +52,12 @@ const ProtectedLibrary = protectedPage(LibraryPage);
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  // The library's filters live in the URL so the tag index can hand off to it,
+  // and so a filtered shelf stays a link someone can keep or share.
+  validateSearch: (search: Record<string, unknown>): { tag?: string; q?: string } => ({
+    tag: typeof search.tag === "string" && search.tag ? search.tag : undefined,
+    q: typeof search.q === "string" && search.q ? search.q : undefined,
+  }),
   component: ProtectedLibrary,
 });
 
