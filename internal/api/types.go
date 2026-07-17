@@ -37,6 +37,12 @@ type Session struct {
 	Credentials []Credential `json:"credentials"`
 }
 
+// SignedOutOthers is the response of POST /auth/logout/others. Revoked counts
+// the sessions that were cut, not including the caller's own, which survives.
+type SignedOutOthers struct {
+	Revoked int64 `json:"revoked"`
+}
+
 // Invite is a single-use enrollment link. ForUser set means the link enrolls an
 // additional passkey onto an existing account instead of creating one.
 type Invite struct {

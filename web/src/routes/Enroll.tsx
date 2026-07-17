@@ -114,7 +114,13 @@ export function Enroll({ token }: { token: string }) {
         })}
       >
         {busy ? (
-          <Loader2 size={19} className={css({ animation: "spin 0.9s linear infinite" })} />
+          <Loader2
+            size={19}
+            className={css({
+              animation: "spin 0.9s linear infinite",
+              _motionReduce: { animation: "none" },
+            })}
+          />
         ) : (
           <Wand2 size={19} />
         )}

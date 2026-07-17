@@ -42,6 +42,7 @@ export function Button({
   return (
     <button
       disabled={disabled || busy}
+      aria-busy={busy}
       className={cx(
         hstack({
           gap: "2",
@@ -61,7 +62,11 @@ export function Button({
       {...rest}
     >
       {busy ? (
-        <Loader2 size={16} className={css({ animation: "spin 0.9s linear infinite" })} />
+        <Loader2
+          size={16}
+          aria-hidden
+          className={css({ animation: "spin 0.9s linear infinite" })}
+        />
       ) : (
         icon
       )}

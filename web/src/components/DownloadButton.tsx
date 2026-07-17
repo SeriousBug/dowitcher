@@ -62,6 +62,7 @@ export function DownloadButton({ comicId }: { comicId: string }) {
   if (state?.complete) {
     return (
       <span
+        role="img"
         aria-label="Saved for offline reading"
         title="Saved for offline reading. Remove it from Downloads."
         className={cx(base, BUTTON_STATE.done)}

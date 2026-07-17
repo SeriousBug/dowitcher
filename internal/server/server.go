@@ -98,6 +98,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /auth/login/begin", s.handleLoginBegin)
 	s.mux.HandleFunc("POST /auth/login/finish", s.handleLoginFinish)
 	s.mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	s.mux.HandleFunc("POST /auth/logout/others", s.requireAuth(s.handleLogoutOthers))
 	s.mux.HandleFunc("GET /auth/me", s.requireAuth(s.handleMe))
 	s.mux.HandleFunc("DELETE /auth/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
 
