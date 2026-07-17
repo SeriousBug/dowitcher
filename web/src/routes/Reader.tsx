@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookX, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { css, cx } from "styled-system/css";
@@ -8,6 +8,7 @@ import { DownloadButton } from "../components/DownloadButton";
 import { ReaderPageImage, pageSrc } from "../components/ReaderPageImage";
 import { ReaderResumeBanner } from "../components/ReaderResumeBanner";
 import { ReaderScrubber } from "../components/ReaderScrubber";
+import { ReaderShortcutsDialog } from "../components/ReaderShortcutsDialog";
 import { ReaderToolbar } from "../components/ReaderToolbar";
 import { http, HttpError } from "../api/http";
 import { cacheComicDetail, readComicDetail } from "../offline/metaCache";
@@ -15,6 +16,7 @@ import { enqueueProgress, saveProgress as putProgress } from "../offline/progres
 import { buildSpreads, spreadIndexOf } from "../lib/ReaderLayout";
 import { useFitMode, useRtl, useSpread } from "../lib/ReaderPrefs";
 import { comicLabel } from "../lib/format";
+import type { FitMode } from "../lib/ReaderPrefs";
 import type { ComicDetail, Progress, ProgressRequest } from "../api/generated";
 
 /** Long enough that a flip-through collapses to one write, short enough that
@@ -22,6 +24,14 @@ import type { ComicDetail, Progress, ProgressRequest } from "../api/generated";
 const PROGRESS_DEBOUNCE_MS = 1200;
 const CHROME_IDLE_MS = 2500;
 const SWIPE_MIN_PX = 48;
+// Closing the comic is the one gesture that throws away what you were doing, so
+// it is deliberately hard to trigger by accident: a drag two and a half times
+// the page-turn threshold, running almost straight down. A flick meant for a
+// page turn drifts nowhere near this.
+const SWIPE_CLOSE_MIN_PX = 120;
+const SWIPE_CLOSE_RATIO = 3;
+
+const FIT_CYCLE: FitMode[] = ["height", "width", "original"];
 
 // Pre-built class names — Panda extracts at build time and cannot see a style
 // object reached through a variable, so each variant is a finished class.
@@ -43,6 +53,7 @@ const SPREAD_DIR = {
 
 export function ReaderPage({ id }: { id: string }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const { data: detail, isLoading } = useQuery({
     queryKey: ["comic", id],
@@ -81,6 +92,7 @@ export function ReaderPage({ id }: { id: string }) {
   const [chromePinned, setChromePinned] = useState(false);
   const [activity, setActivity] = useState(0);
   const [resumeOffer, setResumeOffer] = useState<number | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [measuredLandscape, setMeasuredLandscape] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
@@ -252,10 +264,16 @@ export function ReaderPage({ id }: { id: string }) {
   // Idle hands mean reading. Anything permanently on screen is something you
   // stop seeing but keep paying pixels for.
   useEffect(() => {
-    if (!chromeVisible || chromePinned || resumeOffer !== null) return;
+    if (!chromeVisible || chromePinned || resumeOffer !== null || shortcutsOpen) return;
     const timer = window.setTimeout(() => setChromeVisible(false), CHROME_IDLE_MS);
     return () => window.clearTimeout(timer);
-  }, [chromeVisible, chromePinned, resumeOffer, activity]);
+  }, [chromeVisible, chromePinned, resumeOffer, shortcutsOpen, activity]);
+
+  const close = useCallback(() => {
+    // The unmount cleanup flushes the pending progress write, so leaving here is
+    // as safe as clicking the X in the toolbar.
+    void navigate({ to: "/" });
+  }, [navigate]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -264,11 +282,29 @@ export function ReaderPage({ id }: { id: string }) {
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
         return;
       }
+      // A held modifier means the key belongs to the browser or the OS: Ctrl+F
+      // is find, Cmd+D is bookmark. Only Shift+Space is ours, and it is handled
+      // as its own case below.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
       switch (e.key) {
+        case "Escape":
+          // The dialog closes itself on Escape and the resume banner is the
+          // reader's own transient state — either one is what the reader means
+          // to dismiss, so neither turn also closes the comic.
+          if (shortcutsOpen) return;
+          if (resumeOffer !== null) {
+            setResumeOffer(null);
+            break;
+          }
+          close();
+          return;
         case "ArrowRight":
+        case "l":
           turnSpatial(1);
           break;
         case "ArrowLeft":
+        case "h":
           turnSpatial(-1);
           break;
         case "PageDown":
@@ -289,15 +325,50 @@ export function ReaderPage({ id }: { id: string }) {
         case "End":
           jump(pageCount - 1);
           break;
+        case "f":
+          setFit(FIT_CYCLE[(FIT_CYCLE.indexOf(fit) + 1) % FIT_CYCLE.length]!);
+          break;
+        case "s":
+          setSpread(!spread);
+          break;
+        case "d":
+          setRtl(!rtl);
+          break;
+        case "?":
+          setShortcutsOpen(true);
+          break;
         default:
           return;
       }
       // A key press means the reader is here; remind them where they are.
       showChrome();
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [turnSpatial, turnReading, jump, pageCount, showChrome]);
+    // Capture, so this runs before the dialog's own Escape handling rather than
+    // after it. Ark closes on Escape from a listener below us, and React flushes
+    // that state change synchronously — which tears down this effect and
+    // re-subscribes a fresh closure *while the same event is still travelling*.
+    // A bubble-phase listener would then be invoked with shortcutsOpen already
+    // false and read the Escape a second time, dismissing whatever sits behind
+    // the dialog. Nothing here depends on running last: the scrubber is fenced
+    // off by the target check above, not by propagation order.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [
+    turnSpatial,
+    turnReading,
+    jump,
+    pageCount,
+    showChrome,
+    close,
+    shortcutsOpen,
+    resumeOffer,
+    fit,
+    setFit,
+    spread,
+    setSpread,
+    rtl,
+    setRtl,
+  ]);
 
   // A fit-width page is taller than the viewport, so a turn that kept the scroll
   // position would drop you into the middle of the new page.
@@ -379,17 +450,33 @@ export function ReaderPage({ id }: { id: string }) {
     const t = e.changedTouches[0]!;
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
+
+    // The tap zone underneath would otherwise act a second time on the same
+    // finger.
+    const consume = () => {
+      swipedRef.current = true;
+      window.setTimeout(() => {
+        swipedRef.current = false;
+      }, 0);
+    };
+
     // Bias to vertical: on a fit-width page a scroll that drifts sideways must
     // not turn the page out from under the reader.
-    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    // The tap zone underneath would otherwise turn the page a second time.
-    swipedRef.current = true;
-    window.setTimeout(() => {
-      swipedRef.current = false;
-    }, 0);
-    // The page follows the finger: dragging left pulls in whatever sits to the
-    // right, which is the next page only when the book runs left-to-right.
-    turnSpatial(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) >= SWIPE_MIN_PX && Math.abs(dx) >= Math.abs(dy) * 1.5) {
+      consume();
+      // The page follows the finger: dragging left pulls in whatever sits to the
+      // right, which is the next page only when the book runs left-to-right.
+      turnSpatial(dx < 0 ? 1 : -1);
+      return;
+    }
+
+    // Only fit-height has no scroll of its own, so it is the only mode where a
+    // downward drag cannot mean "scroll the page" — in the other two this
+    // gesture would fight the thing the reader was actually doing.
+    if (fit !== "height") return;
+    if (dy < SWIPE_CLOSE_MIN_PX || Math.abs(dx) * SWIPE_CLOSE_RATIO > dy) return;
+    consume();
+    close();
   };
 
   const guard = (fn: () => void) => () => {
@@ -487,6 +574,7 @@ export function ReaderPage({ id }: { id: string }) {
         rtl={rtl}
         onRtl={setRtl}
         visible={chromeVisible}
+        onShortcuts={() => setShortcutsOpen(true)}
         download={<DownloadButton comicId={id} />}
       />
 
@@ -592,6 +680,8 @@ export function ReaderPage({ id }: { id: string }) {
         onDraggingChange={setChromePinned}
         visible={chromeVisible}
       />
+
+      <ReaderShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );
 }
