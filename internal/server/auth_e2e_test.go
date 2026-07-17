@@ -18,10 +18,18 @@ import (
 )
 
 // testServer spins up a full Server backed by a temp SQLite DB and an httptest
-// server. The httptest server is started with a nil handler and given the real
-// one afterwards, because the RP ID has to be derived from the URL the listener
-// picked, which does not exist until it is running.
+// server.
 func testServer(t *testing.T, cfg func(*Config)) (*httptest.Server, *store.Store, *http.Client) {
+	t.Helper()
+	_, ts, st, client := newTestServer(t, cfg)
+	return ts, st, client
+}
+
+// newTestServer is testServer plus the Server itself, for tests that attach a
+// collaborator to it. The httptest server is started with a nil handler and
+// given the real one afterwards, because the RP ID has to be derived from the
+// URL the listener picked, which does not exist until it is running.
+func newTestServer(t *testing.T, cfg func(*Config)) (*Server, *httptest.Server, *store.Store, *http.Client) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -40,10 +48,11 @@ func testServer(t *testing.T, cfg func(*Config)) (*httptest.Server, *store.Store
 	if err != nil {
 		t.Fatalf("auth manager: %v", err)
 	}
-	ts.Config.Handler = New(st, mgr, c).Handler()
+	srv := New(st, mgr, c)
+	ts.Config.Handler = srv.Handler()
 
 	jar, _ := cookiejar.New(nil)
-	return ts, st, &http.Client{Jar: jar}
+	return srv, ts, st, &http.Client{Jar: jar}
 }
 
 // rpIDOf is the host of the test origin, without the port.

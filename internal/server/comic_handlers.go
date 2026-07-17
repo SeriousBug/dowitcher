@@ -1,0 +1,495 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/longbox/internal/cbz"
+	"github.com/SeriousBug/longbox/internal/store"
+)
+
+const (
+	// defaultPageSize and maxPageSize bound a listing. The cap exists so a
+	// client cannot ask for the entire library in one response and make the
+	// server materialise it.
+	defaultPageSize = 100
+	maxPageSize     = 500
+	// coverWidth is the library grid's thumbnail width. One size, generated
+	// once: a self-hosted instance serves a handful of readers, and a
+	// responsive image set would cost more cache than it saves.
+	coverWidth = 400
+	// immutableCache is the caching rule for page and cover bytes. A page's
+	// bytes cannot change for a given comic id and index — the id is bound to a
+	// file whose contents are hashed, and a file whose contents change gets a
+	// new hash and a fresh ETag from the next scan. So the response is cacheable
+	// for as long as the browser will hold it, which is what makes flipping back
+	// through a comic instant instead of a round trip per page. private, because
+	// a page of somebody's private upload must never sit in a shared proxy.
+	immutableCache = "private, immutable, max-age=31536000"
+)
+
+// handleListComics is the library grid: one filtered, paginated page of what the
+// caller may see, plus their progress in those comics.
+func (s *Server) handleListComics(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	q := r.URL.Query()
+	f := store.ComicFilter{
+		Tag:        q.Get("tag"),
+		Series:     q.Get("series"),
+		Query:      q.Get("q"),
+		Collection: q.Get("collection"),
+		Limit:      defaultPageSize,
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, "limit must be a positive number")
+			return
+		}
+		f.Limit = min(n, maxPageSize)
+	}
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "offset must be a non-negative number")
+			return
+		}
+		f.Offset = n
+	}
+
+	comics, total, err := s.store.ListComicsFiltered(u.ID, f)
+	if err != nil {
+		log.Printf("list comics: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if comics == nil {
+		comics = []api.Comic{}
+	}
+	progress, err := s.progressFor(u.ID, comics)
+	if err != nil {
+		log.Printf("list progress: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ComicList{
+		Comics: comics, Progress: progress, Total: total, Offset: f.Offset, Limit: f.Limit,
+	})
+}
+
+// progressFor narrows the caller's progress to the comics on this page.
+func (s *Server) progressFor(userID string, comics []api.Comic) ([]api.Progress, error) {
+	all, err := s.store.ListProgress(userID)
+	if err != nil {
+		return nil, err
+	}
+	onPage := make(map[string]struct{}, len(comics))
+	for _, c := range comics {
+		onPage[c.ID] = struct{}{}
+	}
+	out := []api.Progress{}
+	for _, p := range all {
+		if _, ok := onPage[p.ComicID]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) handleGetComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+	a, err := cbz.Open(s.comicFile(row))
+	if err != nil {
+		log.Printf("open comic %s (%s): %v", comic.ID, row.Path, err)
+		writeErr(w, http.StatusInternalServerError, "this comic's file could not be read")
+		return
+	}
+	defer a.Close()
+	pages, err := a.Pages()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "this comic's file could not be read")
+		return
+	}
+	out := api.ComicDetail{Comic: comic, Pages: pages}
+	// No progress row simply means unread, which is not an error.
+	if p, err := s.store.GetProgress(u.ID, comic.ID); err == nil {
+		out.Progress = &p
+	} else if !isNotFound(err) {
+		log.Printf("get progress %s: %v", comic.ID, err)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleComicPage streams one page's bytes. It is the hot path of the reader: a
+// page is copied straight from the zip entry to the socket, never buffered, so
+// serving a 20MB scan costs a fixed buffer rather than 20MB of heap per reader.
+func (s *Server) handleComicPage(w http.ResponseWriter, r *http.Request) {
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 0 {
+		writeErr(w, http.StatusBadRequest, "bad page number")
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+
+	etag := etagFor(row, strconv.Itoa(n))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", immutableCache)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	a, err := cbz.Open(s.comicFile(row))
+	if err != nil {
+		log.Printf("open comic %s (%s): %v", comic.ID, row.Path, err)
+		writeErr(w, http.StatusInternalServerError, "this comic's file could not be read")
+		return
+	}
+	defer a.Close()
+	rc, ct, err := a.Page(n)
+	if err != nil {
+		if errors.Is(err, cbz.ErrPageRange) {
+			writeErr(w, http.StatusNotFound, "no such page")
+			return
+		}
+		log.Printf("page %d of %s: %v", n, comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "this page could not be read")
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", ct)
+	if _, err := io.Copy(w, rc); err != nil {
+		// The client hung up or the archive is truncated. The header is long
+		// gone, so there is nothing to say to the client; log and move on.
+		log.Printf("stream page %d of %s: %v", n, comic.ID, err)
+	}
+}
+
+// handleComicCover serves the library grid thumbnail. The scanner writes covers
+// into the cache dir as it goes; a miss is generated here rather than 404ed, so
+// a comic added seconds ago still has a cover and a wiped cache heals itself.
+func (s *Server) handleComicCover(w http.ResponseWriter, r *http.Request) {
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+	etag := etagFor(row, "cover")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", immutableCache)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+
+	if p := s.coverCachePath(row); p != "" {
+		if f, err := os.Open(p); err == nil {
+			defer f.Close()
+			io.Copy(w, f)
+			return
+		}
+	}
+	data, err := s.generateCover(row)
+	if err != nil {
+		log.Printf("cover for %s (%s): %v", comic.ID, row.Path, err)
+		writeErr(w, http.StatusInternalServerError, "this comic's cover could not be read")
+		return
+	}
+	w.Write(data)
+}
+
+// generateCover decodes the cover page and scales it, caching the result when a
+// cache dir is configured. A cache write that fails is logged and ignored: the
+// user still gets their cover, one decode later than they should have.
+func (s *Server) generateCover(row store.ComicRow) ([]byte, error) {
+	a, err := cbz.Open(s.comicFile(row))
+	if err != nil {
+		return nil, err
+	}
+	defer a.Close()
+	rc, err := a.Cover()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	data, err := cbz.Thumbnail(rc, coverWidth)
+	if err != nil {
+		return nil, err
+	}
+	if p := s.coverCachePath(row); p != "" {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			log.Printf("cover cache dir: %v", err)
+		} else if err := os.WriteFile(p, data, 0o644); err != nil {
+			log.Printf("cache cover %s: %v", p, err)
+		}
+	}
+	return data, nil
+}
+
+// coverCachePath names a comic's cached cover, or "" when there is no cache dir
+// or no hash to key it by. The key is the content hash rather than the id so a
+// re-scan of an unchanged file finds the cover it already generated, and an
+// edited file misses instead of serving the old cover forever.
+func (s *Server) coverCachePath(row store.ComicRow) string {
+	if s.cfg.CoverCacheDir == "" || row.ContentHash == "" {
+		return ""
+	}
+	return filepath.Join(s.cfg.CoverCacheDir, row.ContentHash+".jpg")
+}
+
+// handleSetProgress is the cross-device sync: the reader PUTs its position, and
+// this is the copy every other device reads back.
+func (s *Server) handleSetProgress(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	var req api.ProgressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	// Clamp rather than reject: a client that thinks the comic is longer than it
+	// is (a file replaced under it, say) should land on the last page, not lose
+	// its place to a 400.
+	page := req.Page
+	if page < 0 {
+		page = 0
+	}
+	if comic.PageCount > 0 && page > comic.PageCount-1 {
+		page = comic.PageCount - 1
+	}
+	// Reaching the last page completes the comic. The rule lives here rather
+	// than in the client so every client agrees, and it only ever sets the flag:
+	// an explicit completed=true (marked read without opening) survives, and
+	// paging backwards through a finished comic does not un-finish it unless the
+	// client says so.
+	completed := req.Completed
+	if comic.PageCount > 0 && page >= comic.PageCount-1 {
+		completed = true
+	}
+	p, err := s.store.SetProgress(u.ID, comic.ID, page, completed)
+	if err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("set progress %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) handleSetTags(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	var req api.SetTagsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.SetComicTags(u.ID, id, req.Tags); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("set tags %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	comic, err := s.store.GetComic(u.ID, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, comic)
+}
+
+// handleDeleteComic removes an upload and its file.
+func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+	if row.Source != store.SourceUpload {
+		// The library folder is the source of truth for what is in it. Dropping
+		// the row would delete the tags and reading progress and then resurrect
+		// the comic, stripped, on the next scan. Removing a library comic means
+		// removing its file.
+		writeErr(w, http.StatusBadRequest, "library comics are managed from the library folder, not here")
+		return
+	}
+	// Visibility got them this far; a shared collection is not a licence to
+	// delete somebody's upload.
+	if row.OwnerID != u.ID && !u.IsAdmin {
+		writeErr(w, http.StatusForbidden, "only the uploader can delete an upload")
+		return
+	}
+	if err := s.store.DeleteComic(comic.ID); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("delete comic %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	// The row goes first: a file left behind is dead weight, whereas a row whose
+	// file is gone is a comic that opens to an error.
+	if err := os.Remove(s.comicFile(row)); err != nil && !os.IsNotExist(err) {
+		log.Printf("delete upload file %s: %v", row.Path, err)
+	}
+	writeOK(w)
+}
+
+func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	tags, err := s.store.ListTags(u.ID)
+	if err != nil {
+		log.Printf("list tags: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, tags)
+}
+
+func (s *Server) handleLibraryStatus(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	st := s.libraryStatus()
+	// The scanner counts the files it walked; the card shows what this user can
+	// actually open, which for anyone but an admin is a different number.
+	if n, err := s.store.CountVisibleComics(u.ID); err == nil {
+		st.ComicCount = n
+	} else {
+		log.Printf("count comics: %v", err)
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleLibraryScan kicks off a full rescan and answers immediately: a scan of a
+// real library takes minutes, and its progress belongs on the WS where every
+// open tab sees it, not in this response.
+func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
+	if s.lib == nil {
+		writeErr(w, http.StatusServiceUnavailable, "no library folder is configured on this server")
+		return
+	}
+	ctx := detached(r)
+	go func() {
+		if err := s.lib.Scan(ctx); err != nil {
+			log.Printf("library scan: %v", err)
+		}
+	}()
+	writeOK(w)
+}
+
+// visibleComic resolves {id} to a comic the caller may see, writing the response
+// and returning false when they may not. The store decides: a comic that exists
+// but is not theirs comes back as ErrNotFound, and it is surfaced as a 404 for
+// the same reason — a 403 would confirm the comic exists.
+func (s *Server) visibleComic(w http.ResponseWriter, r *http.Request) (api.Comic, bool) {
+	u, _ := userFrom(r.Context())
+	id := r.PathValue("id")
+	c, err := s.store.GetComic(u.ID, id)
+	if err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return api.Comic{}, false
+		}
+		log.Printf("get comic %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return api.Comic{}, false
+	}
+	return c, true
+}
+
+// comicRow reaches the ownership and on-disk fields api.Comic does not carry. It
+// ignores visibility, so it is only ever called after visibleComic has passed.
+func (s *Server) comicRow(w http.ResponseWriter, id string) (store.ComicRow, bool) {
+	row, err := s.store.ComicRowByID(id)
+	if err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return row, false
+		}
+		log.Printf("get comic row %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return row, false
+	}
+	return row, true
+}
+
+// comicFile turns a stored row into a file to open. Paths are stored relative to
+// the root they came from, so a container's mount points can move without
+// rewriting the database.
+func (s *Server) comicFile(row store.ComicRow) string {
+	if row.Source == store.SourceUpload {
+		return filepath.Join(s.cfg.UploadsDir, row.Path)
+	}
+	return filepath.Join(s.cfg.LibraryRoot, row.Path)
+}
+
+// etagFor identifies immutable bytes derived from one comic: its content hash
+// plus what was derived from it. The hash changes if and only if the archive's
+// contents change, which is exactly when a cached page must stop being served.
+//
+// Rows written before a hash was computed fall back to size and mtime, which is
+// weaker (a same-size edit within the mtime's second slips through) but still
+// beats serving a page with no validator at all.
+func etagFor(row store.ComicRow, part string) string {
+	base := row.ContentHash
+	if base == "" {
+		base = strconv.FormatInt(row.FileSize, 10) + "-" + strconv.FormatInt(row.ModifiedAt, 10)
+	}
+	return `"` + base + "-" + part + `"`
+}
+
+// etagMatches implements If-None-Match for our own strong tags: the wildcard, or
+// any member of the list. Weak comparison is not needed — nothing here ever
+// issues a W/ tag.
+func etagMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" || part == etag {
+			return true
+		}
+	}
+	return false
+}

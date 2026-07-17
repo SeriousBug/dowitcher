@@ -101,6 +101,23 @@ type ComicDetail struct {
 	Progress *Progress `json:"progress,omitempty"`
 }
 
+// ComicList is one page of the library.
+//
+// Progress rides alongside the comics rather than inside Comic because a comic
+// is server-wide state — the same row the WS comics message carries — while
+// progress belongs to one user. The client joins the two on comicId. Only the
+// listed comics' progress is included, so the payload stays proportional to the
+// page rather than to the reader's history.
+type ComicList struct {
+	Comics   []Comic    `json:"comics"`
+	Progress []Progress `json:"progress"`
+	// Total is how many comics match the filter before pagination, which is
+	// what the client needs to size the pager.
+	Total  int `json:"total"`
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+}
+
 // Progress is one user's position in one comic. Page is 0-based.
 type Progress struct {
 	ComicID   string `json:"comicId"`
@@ -144,6 +161,18 @@ type UpdateCollectionRequest struct {
 	Name    *string `json:"name,omitempty"`
 	Summary *string `json:"summary,omitempty"`
 	Shared  *bool   `json:"shared,omitempty"`
+}
+
+// CollectionComicRequest names the comic to file into a collection.
+type CollectionComicRequest struct {
+	ComicID string `json:"comicId"`
+}
+
+// ReorderCollectionRequest is a collection's whole order, not a move
+// instruction: the full list keeps the stored positions dense and makes the
+// request idempotent, so a retry after a dropped response cannot scramble it.
+type ReorderCollectionRequest struct {
+	ComicIDs []string `json:"comicIds"`
 }
 
 type SetTagsRequest struct {

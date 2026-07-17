@@ -432,6 +432,22 @@ func (s *Store) ComicRowByHash(hash string) (ComicRow, error) {
 	return s.comicRowWhere(`comics.content_hash=?`, hash)
 }
 
+// ComicRowByID returns the raw row for an id, ignoring visibility. Handlers must
+// gate on GetComic first and use this only to reach the fields api.Comic does not
+// carry — the on-disk source and owner.
+func (s *Store) ComicRowByID(id string) (ComicRow, error) {
+	return s.comicRowWhere(`comics.id=?`, id)
+}
+
+// CountLibraryComics counts the comics under the watched root whose file is
+// present. Missing rows are excluded: they are kept so that a remount restores
+// them, but a status card that counts comics nobody can open is lying.
+func (s *Store) CountLibraryComics() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM comics WHERE source=? AND missing=0`, SourceLibrary).Scan(&n)
+	return n, err
+}
+
 func (s *Store) comicRowWhere(where string, args ...any) (ComicRow, error) {
 	var c ComicRow
 	var owner sql.NullString
@@ -537,6 +553,82 @@ func (s *Store) ListComicsInCollection(userID, collectionID string) ([]api.Comic
 		return nil, err
 	}
 	return s.scanComics(rows)
+}
+
+// ComicFilter narrows a library listing. A zero field is not a filter; Limit 0
+// returns everything from Offset on.
+type ComicFilter struct {
+	Tag    string
+	Series string
+	// Query matches a substring of the title or the series.
+	Query      string
+	Collection string
+	Offset     int
+	Limit      int
+}
+
+// ListComicsFiltered returns one page of the comics userID may see under a
+// filter, plus the total matching it before pagination.
+//
+// Filtering happens in SQL alongside the visibility fragment rather than in the
+// handler, for the same reason visibility does: a listing filtered in Go would
+// have to load every comic the user can see to return twenty of them.
+func (s *Store) ListComicsFiltered(userID string, f ComicFilter) ([]api.Comic, int, error) {
+	vis, args := visibleComics(userID)
+	from := `FROM comics`
+	where := []string{vis}
+	order := ` ORDER BY comics.series, comics.number, comics.added_at DESC`
+	if f.Collection != "" {
+		from += ` JOIN collection_comics cc ON cc.comic_id=comics.id`
+		where = append(where, `cc.collection_id=?`)
+		args = append(args, f.Collection)
+		// A collection's order is the point of a collection, so it wins over the
+		// library's series ordering whenever one is being listed.
+		order = ` ORDER BY cc.position`
+	}
+	if f.Tag != "" {
+		where = append(where, `EXISTS (SELECT 1 FROM comic_tags ct JOIN tags t ON t.id=ct.tag_id
+			WHERE ct.comic_id=comics.id AND t.name=?)`)
+		args = append(args, f.Tag)
+	}
+	if f.Series != "" {
+		where = append(where, `comics.series=?`)
+		args = append(args, f.Series)
+	}
+	if f.Query != "" {
+		// LIKE is case-insensitive over ASCII in SQLite by default, which is the
+		// behaviour a search box wants.
+		where = append(where, `(comics.title LIKE ? ESCAPE '\' OR comics.series LIKE ? ESCAPE '\')`)
+		like := "%" + escapeLike(f.Query) + "%"
+		args = append(args, like, like)
+	}
+	cond := strings.Join(where, " AND ")
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) `+from+` WHERE `+cond, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT ` + comicCols + ` ` + from + ` WHERE ` + cond + order
+	if f.Limit > 0 {
+		q += ` LIMIT ? OFFSET ?`
+		args = append(args, f.Limit, f.Offset)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	out, err := s.scanComics(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// escapeLike neutralises the wildcards in a user's search string so a query of
+// "%" means the literal character rather than "every comic".
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // CountVisibleComics counts what userID may see, for the library status card.

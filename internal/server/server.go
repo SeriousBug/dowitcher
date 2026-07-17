@@ -19,6 +19,22 @@ type Config struct {
 	RPID   string
 	Origin string
 	Secure bool
+	// LibraryRoot is the watched folder. A library comic's Comic.Path is
+	// relative to it; an upload's is relative to UploadsDir. The pair is how a
+	// comic id becomes a file to read pages out of.
+	LibraryRoot string
+	UploadsDir  string
+	// CoverCacheDir holds cover thumbnails named by content hash. The scanner
+	// fills it ahead of time; a miss is generated on the fly rather than served
+	// as a 404, so a cold cache is slow rather than broken.
+	CoverCacheDir string
+	// ImportTempDir is where an upload's images land before the pipeline runs.
+	// Empty means the OS temp dir, which in a container is usually a small
+	// tmpfs — an import is easily gigabytes, so a deployment should point this
+	// at real storage.
+	ImportTempDir string
+	// MaxUploadBytes caps one import upload. Zero means DefaultMaxUploadBytes.
+	MaxUploadBytes int64
 	// DevAuth, when non-nil, resolves every gated route to one fixed user
 	// without a passkey. See auth.DevAuth — it is a development-only hole.
 	DevAuth *auth.DevAuth
