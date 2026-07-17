@@ -41,3 +41,23 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+
+      # Chromium alone: playwright.config.ts declares no other project, and what
+      # the suite tests is service worker behaviour rather than rendering.
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+
+      # Boots the real server from e2e/serve.sh — `go build -tags dev` for the
+      # auth bypass, serving the SPA embedded from web/dist. `pnpm e2e` rebuilds
+      # dist itself, so this cannot drive a stale bundle if the steps above move.
+      - run: pnpm e2e
+        working-directory: web
+
+      # Traces are written only for failures (see `trace` in playwright.config).
+      # Without them a red offline test is close to undebuggable from a log.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: web/test-results/
+          retention-days: 7
