@@ -1,2 +1,8 @@
 node_modules
 styled-system
+
+# The E2E server's scratch: its SQLite DB, the generated CBZ fixture, and the
+# server binary. serve.sh wipes and rebuilds it every run.
+e2e/.tmp
+playwright-report
+test-results

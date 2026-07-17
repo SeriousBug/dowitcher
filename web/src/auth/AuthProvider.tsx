@@ -1,7 +1,8 @@
 import { createContext, use, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { http, HttpError } from "../api/http";
+import { http, HttpError, isUnanswered } from "../api/http";
 import { clearOfflineData } from "../offline/downloads";
+import { cacheSession, forgetCachedSession, readCachedSession } from "../offline/sessionCache";
 import type { Session, User, Credential } from "../api/generated";
 
 interface AuthContextValue {
@@ -18,11 +19,24 @@ const meQueryKey = ["auth", "me"] as const;
 
 // Logged out is an answer, not a failure: 401 becomes null so the query settles
 // into a "no one is signed in" state instead of retrying and surfacing an error.
+//
+// An unreachable server is neither. It is the absence of an answer, and the two
+// must not collapse together: treating "couldn't ask" as "signed out" is what
+// sends an offline reader to a login page that cannot reach the server either,
+// past the comics they downloaded for exactly this moment.
 async function fetchSession(): Promise<Session | null> {
   try {
-    return await http.get<Session>("/auth/me");
+    const session = await http.get<Session>("/auth/me");
+    await cacheSession(session);
+    return session;
   } catch (err) {
-    if (err instanceof HttpError && err.status === 401) return null;
+    if (err instanceof HttpError && err.status === 401) {
+      await forgetCachedSession();
+      return null;
+    }
+    if (!isUnanswered(err)) throw err;
+    const cached = await readCachedSession();
+    if (cached) return cached;
     throw err;
   }
 }

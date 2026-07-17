@@ -10,7 +10,7 @@ import { ReaderResumeBanner } from "../components/ReaderResumeBanner";
 import { ReaderScrubber } from "../components/ReaderScrubber";
 import { ReaderShortcutsDialog } from "../components/ReaderShortcutsDialog";
 import { ReaderToolbar } from "../components/ReaderToolbar";
-import { http, HttpError } from "../api/http";
+import { http, isUnanswered } from "../api/http";
 import { cacheComicDetail, readComicDetail } from "../offline/metaCache";
 import { enqueueProgress, saveProgress as putProgress } from "../offline/progressQueue";
 import { buildSpreads, spreadIndexOf } from "../lib/ReaderLayout";
@@ -68,15 +68,13 @@ export function ReaderPage({ id }: { id: string }) {
         void cacheComicDetail(fresh);
         return fresh;
       } catch (err) {
-        // Only a dead network falls back. A 404 is the server saying this comic
-        // is gone, which is an answer, not an outage.
-        if (err instanceof HttpError) throw err;
+        if (!isUnanswered(err)) throw err;
         const cached = await readComicDetail(id);
         if (cached) return cached;
         throw err;
       }
     },
-    retry: (count, err) => !(err instanceof HttpError && err.status < 500) && count < 2,
+    retry: (count, err) => isUnanswered(err) && count < 2,
     // The page list and the file behind it don't change while you read. Refetching
     // on tab focus would only ever re-race our own progress writes.
     staleTime: Infinity,

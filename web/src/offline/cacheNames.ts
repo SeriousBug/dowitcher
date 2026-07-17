@@ -14,7 +14,7 @@ export const SHELL_CACHE = "dowitcher-shell-v1";
 export const PAGE_CACHE = "dowitcher-pages-v1";
 
 export const DB_NAME = "dowitcher-offline";
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 // Object stores in DB_NAME.
 //
@@ -29,6 +29,9 @@ export const STORE_PROGRESS_QUEUE = "progressQueue";
 // STORE_COMICS caches comic metadata and page lists so the library and the
 // reader can render without the network.
 export const STORE_COMICS = "comics";
+// STORE_SESSION holds the last session the server confirmed, so a cold launch
+// with no network can tell "signed in, unreachable" from "signed out".
+export const STORE_SESSION = "session";
 
 // pageURL is the canonical cache key for one page's bytes. It matches the
 // server route so a cache hit and a network fetch are the same request.

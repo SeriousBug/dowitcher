@@ -9,7 +9,8 @@
     "dev": "panda codegen && vite",
     "build": "panda codegen && vite build",
     "preview": "vite preview",
-    "typecheck": "panda codegen && tsc --noEmit"
+    "typecheck": "panda codegen && tsc --noEmit",
+    "e2e": "pnpm build && playwright test"
   },
   "dependencies": {
     "@ark-ui/react": "^5.29.1",
@@ -21,10 +22,13 @@
     "react-dom": "^19.2.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@pandacss/dev": "^1.6.1",
+    "@playwright/test": "^1.61.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",

@@ -4,6 +4,7 @@ import {
   STORE_COMICS,
   STORE_DOWNLOADS,
   STORE_PROGRESS_QUEUE,
+  STORE_SESSION,
 } from "./cacheNames";
 
 /**
@@ -44,6 +45,9 @@ export function openDB(): Promise<IDBDatabase> {
       // details, which share no key path. Callers namespace their own keys.
       if (!db.objectStoreNames.contains(STORE_COMICS)) {
         db.createObjectStore(STORE_COMICS);
+      }
+      if (!db.objectStoreNames.contains(STORE_SESSION)) {
+        db.createObjectStore(STORE_SESSION);
       }
     };
     req.onsuccess = () => resolve(req.result);
