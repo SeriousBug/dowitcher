@@ -481,7 +481,7 @@ func (s *Server) handleSetTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.store.SetComicTags(u.ID, u.IsAdmin, id, req.Tags); err != nil {
+	if err := s.store.SetComicTags(u.ID, id, req.Tags); err != nil {
 		if isNotFound(err) {
 			writeErr(w, http.StatusNotFound, "comic not found")
 			return
@@ -536,6 +536,51 @@ func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
 	// file is gone is a comic that opens to an error.
 	if err := os.Remove(s.comicFile(row)); err != nil && !os.IsNotExist(err) {
 		log.Printf("delete upload file %s: %v", row.Path, err)
+	}
+	writeOK(w)
+}
+
+// handleClaimComic takes a library comic into the caller's own library. Admin
+// only: a claim removes a comic from everyone else's view, so it is the same
+// kind of server-wide decision as triggering a scan, not a personal preference.
+func (s *Server) handleClaimComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	err := s.store.ClaimComic(u.ID, comic.ID)
+	if isNotFound(err) {
+		// visibleComic already passed, so the comic exists and the caller can see
+		// it: the only way the update matches nothing is the source guard. Saying
+		// so beats a 404 that reads as "no such comic".
+		writeErr(w, http.StatusBadRequest, "only comics from the library folder can be claimed")
+		return
+	}
+	if err != nil {
+		log.Printf("claim comic %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeOK(w)
+}
+
+// handleUnclaimComic hands a claimed comic back to the server.
+func (s *Server) handleUnclaimComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	err := s.store.UnclaimComic(u.ID, u.IsAdmin, comic.ID)
+	if isNotFound(err) {
+		writeErr(w, http.StatusBadRequest, "that comic is not claimed")
+		return
+	}
+	if err != nil {
+		log.Printf("unclaim comic %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
 	}
 	writeOK(w)
 }
@@ -619,7 +664,8 @@ func (s *Server) comicRow(w http.ResponseWriter, id string) (store.ComicRow, boo
 
 // comicFile turns a stored row into a file to open. Paths are stored relative to
 // the root they came from, so a container's mount points can move without
-// rewriting the database.
+// rewriting the database. A claimed comic's file never moved out of the library
+// root, so only an upload resolves anywhere else.
 func (s *Server) comicFile(row store.ComicRow) string {
 	if row.Source == store.SourceUpload {
 		return filepath.Join(s.cfg.UploadsDir, row.Path)

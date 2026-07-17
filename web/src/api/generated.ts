@@ -95,7 +95,22 @@ export interface Comic {
    * progress; the sweep clears the flag if the file comes back.
    */
   missing: boolean;
+  /**
+   * Tags are the caller's own labels on this comic, never anyone else's.
+   */
   tags: string[];
+  /**
+   * Source is where the comic came from: "library", "upload" or "claimed".
+   * The client needs it to know which comics an admin may claim, and the
+   * reader needs nothing else from it. The owner's id stays server-side.
+   */
+  source: string;
+  /**
+   * OwnedByMe reports whether the caller owns this comic — their upload, or a
+   * comic they claimed. It answers "may I unclaim this" without naming the
+   * owner of a comic the caller does not own.
+   */
+  ownedByMe: boolean;
 }
 /**
  * Page is one image inside a CBZ. Name is the zip entry name.
@@ -117,11 +132,13 @@ export interface ComicDetail {
 }
 /**
  * ComicList is one page of the library.
- * Progress rides alongside the comics rather than inside Comic because a comic
- * is server-wide state — the same row the WS comics message carries — while
- * progress belongs to one user. The client joins the two on comicId. Only the
- * listed comics' progress is included, so the payload stays proportional to the
- * page rather than to the reader's history.
+ * Progress rides alongside the comics rather than inside Comic because it is
+ * keyed by comic id and the client joins the two — only the listed comics'
+ * progress is included, so the payload stays proportional to the page rather
+ * than to the reader's history.
+ * Note that a Comic is not server-wide state: its Tags and OwnedByMe are the
+ * caller's own, so a rendered list is per-user and must never be broadcast to
+ * anyone but the user it was built for. See the warning on WSTypeComics.
  */
 export interface ComicList {
   comics: Comic[];
@@ -145,9 +162,10 @@ export interface Progress {
   updatedAt: number /* int64 */;
 }
 /**
- * Tag is a free-form label. Tags are server-global rather than per-user: a
- * small trusted instance benefits more from everyone seeing the same
- * vocabulary than from per-user namespacing.
+ * Tag is a free-form label, private to the user who wrote it. Two users may
+ * coin the same name on the same comic and neither sees the other's: a tag is
+ * how one reader organises their own shelf, not a shared vocabulary the whole
+ * instance edits.
  */
 export interface Tag {
   name: string;

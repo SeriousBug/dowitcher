@@ -112,6 +112,10 @@ func (s *Server) registerLibraryRoutes() {
 	s.mux.HandleFunc("PUT /api/comics/{id}/progress", s.requireAuth(s.handleSetProgress))
 	s.mux.HandleFunc("PUT /api/comics/{id}/tags", s.requireAuth(s.handleSetTags))
 	s.mux.HandleFunc("DELETE /api/comics/{id}", s.requireAuth(s.handleDeleteComic))
+	// Claiming takes a library comic out of every other user's view, so it is an
+	// admin's call rather than a first-come-first-served race between users.
+	s.mux.HandleFunc("POST /api/comics/{id}/claim", s.requireAdmin(s.handleClaimComic))
+	s.mux.HandleFunc("POST /api/comics/{id}/unclaim", s.requireAdmin(s.handleUnclaimComic))
 	s.mux.HandleFunc("GET /api/tags", s.requireAuth(s.handleListTags))
 
 	// Collections. Sharing grants read, never write, so every mutation is gated

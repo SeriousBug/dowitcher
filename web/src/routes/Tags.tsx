@@ -26,7 +26,7 @@ export function TagsPage() {
       <PageHeader
         eyebrow="Index"
         title="Tags"
-        subtitle="Everyone on this server shares one set of tags, so a label means the same thing to all of you."
+        subtitle="Your tags are yours alone. Nobody else on this server sees them, and you don't see theirs."
       />
 
       {tagsQuery.isLoading ? (

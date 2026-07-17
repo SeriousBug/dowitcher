@@ -18,22 +18,34 @@ Dowitcher ships as a single static Go binary with the web UI embedded, on a `dis
   finish on a phone.
 - **Imports folders of images.** Hashes, groups near-duplicate pages, optionally re-encodes to AVIF,
   WebP or JPEG, and packages the result into a deduped CBZ. Progress streams over a WebSocket.
-- **Tags and collections.** Tags are server-global. Collections are ordered, owned, and private by
-  default.
+- **Tags and collections.** Tags are yours alone — nobody else on the server sees them, and you
+  don't see theirs. Collections are ordered, owned, and private by default.
 - **Uploads stay private.** A comic you upload is yours alone until you put it in a collection and
   share that collection. Comics found under the watched library root are server-wide by definition.
+- **Claim what you drop in.** An admin can claim a comic from the watched folder into their own
+  library, which takes it out of everyone else's. The file stays where it is, and the claim can be
+  handed back at any time.
 
 ## Sharing model
 
 A comic is visible to a user if:
 
-- it came from the watched library root, or
-- they uploaded it, or
+- it came from the watched library root and nobody has claimed it, or
+- they uploaded it, or they claimed it, or
 - it sits in a collection whose owner turned sharing on.
 
 Sharing is opt-in per collection, never in bulk, and sharing grants read access only — the owner
 stays the only one who can rename, reorder, or delete. The rule lives in SQL in one place
 (`store.visibleComics`) and every comic read path goes through it, so a handler cannot forget it.
+
+Claiming is how a comic dropped into the watched folder becomes one person's rather than
+everyone's: an admin claims it, it gains an owner, and it leaves every other library. It stays
+where it is on disk and can be handed back at any time, or shared through a collection like any
+upload. Only an admin can claim, because a claim takes a comic away from everybody else.
+
+Tags sit outside all of this: they are per user, so two people can tag the same comic with the
+same word and neither ever sees the other's. Anyone who can read a comic can tag it — the tag is
+theirs, on their own shelf, and it changes nothing for anyone else.
 
 ## Running it
 
