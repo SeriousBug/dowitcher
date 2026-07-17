@@ -1,6 +1,7 @@
 import { createContext, use, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { http, HttpError } from "../api/http";
+import { clearOfflineData } from "../offline/downloads";
 import type { Session, User, Credential } from "../api/generated";
 
 interface AuthContextValue {
@@ -46,6 +47,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     logout: async () => {
       await http.post("/auth/logout");
+      // Downloaded comics are readable with no server to ask, so the session
+      // ending is the only thing that can take them away. Sign-out on a shared
+      // or borrowed device has to leave nothing behind — that is the price of
+      // offline reading being possible at all.
+      //
+      // Before the query cache is cleared, and awaited: a signed-out client
+      // that still has pages on disk is the failure this exists to prevent.
+      await clearOfflineData();
       queryClient.setQueryData(meQueryKey, null);
       await queryClient.invalidateQueries({ queryKey: meQueryKey });
     },

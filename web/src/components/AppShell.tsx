@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+  DownloadCloud,
   FolderOpen,
   Library,
   Loader2,
@@ -20,6 +21,7 @@ const NAV = [
   { to: "/", label: "Library", icon: Library },
   { to: "/collections", label: "Collections", icon: FolderOpen },
   { to: "/tags", label: "Tags", icon: TagsIcon },
+  { to: "/downloads", label: "Offline", icon: DownloadCloud },
   { to: "/import", label: "Import", icon: Upload },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;

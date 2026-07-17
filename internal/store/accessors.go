@@ -354,6 +354,26 @@ func (s *Store) DeleteSession(token string) error {
 	return err
 }
 
+// DeleteUserSessions removes every session belonging to a user. This is what
+// makes the long SessionTTL defensible: without it, the only way to cut off a
+// device holding a live cookie is to delete the account it belongs to.
+func (s *Store) DeleteUserSessions(userID string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE user_id=?`, userID)
+	return err
+}
+
+// DeleteUserSessionsExcept removes a user's sessions apart from keepToken. A
+// user retiring a lost device must not be logged out of the device they are
+// retiring it from, which is the difference between this and
+// DeleteUserSessions.
+//
+// An empty keepToken matches no row and so revokes everything, which is the
+// right answer for a caller that holds no session of its own to preserve.
+func (s *Store) DeleteUserSessionsExcept(userID, keepToken string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepToken)
+	return err
+}
+
 // DeleteExpiredSessions prunes sessions past their TTL.
 func (s *Store) DeleteExpiredSessions() error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().Unix())
@@ -1020,22 +1040,31 @@ func (s *Store) GetProgress(userID, comicID string) (api.Progress, error) {
 	return p, err
 }
 
-// SetProgress records the caller's position in a comic they may see.
+// SetProgress records the caller's position in a comic they may see, stamped
+// with the server clock.
 func (s *Store) SetProgress(userID, comicID string, page int, completed bool) (api.Progress, error) {
+	return s.SetProgressAt(userID, comicID, page, completed, time.Now().Unix())
+}
+
+// SetProgressAt is SetProgress with the observation time supplied by the caller.
+// The row's updated_at is what later writes are ordered against, so a replayed
+// offline write has to store the moment it was read at rather than the moment it
+// arrived — otherwise every replay would look like the newest position on the
+// server. Callers are responsible for bounding updatedAt; see handleSetProgress.
+func (s *Store) SetProgressAt(userID, comicID string, page int, completed bool, updatedAt int64) (api.Progress, error) {
 	c, err := s.GetComic(userID, comicID)
 	if err != nil {
 		return api.Progress{}, err
 	}
-	now := time.Now().Unix()
 	_, err = s.db.Exec(`INSERT INTO progress(user_id,comic_id,page,completed,updated_at)
 		VALUES(?,?,?,?,?)
 		ON CONFLICT(user_id,comic_id) DO UPDATE SET
 			page=excluded.page, completed=excluded.completed, updated_at=excluded.updated_at`,
-		userID, comicID, page, boolInt(completed), now)
+		userID, comicID, page, boolInt(completed), updatedAt)
 	if err != nil {
 		return api.Progress{}, err
 	}
-	return api.Progress{ComicID: comicID, Page: page, PageCount: c.PageCount, Completed: completed, UpdatedAt: now}, nil
+	return api.Progress{ComicID: comicID, Page: page, PageCount: c.PageCount, Completed: completed, UpdatedAt: updatedAt}, nil
 }
 
 // ListProgress returns the caller's progress across every comic they may see.

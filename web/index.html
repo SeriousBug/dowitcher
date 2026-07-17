@@ -7,7 +7,27 @@
          gutter don't flash white at a reader who opened this in a dark room. -->
     <meta name="theme-color" content="#131011" />
     <meta name="color-scheme" content="dark" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.png" type="image/png" />
+    <!-- Safari still reaches for this before the manifest's icons when someone
+         adds the app to the Home Screen. The apple-mobile-web-app-capable meta
+         tag that used to live beside it is gone: since Safari 26 every Home
+         Screen addition opens as a web app without it. -->
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Longbox</title>
+    <script>
+      // Chrome decides the app is installable and fires this well before the
+      // bundle has parsed, and the event is only offered once — a listener added
+      // later in React simply never hears it, and the install button never
+      // appears. Catching it here and handing it to InstallPrompt is the only
+      // way to be reliably early. preventDefault stops Chrome's own infobar so
+      // the app can ask in its own words instead.
+      window.addEventListener("beforeinstallprompt", function (e) {
+        e.preventDefault();
+        window.__longboxInstallPrompt = e;
+        window.dispatchEvent(new Event("longbox:installable"));
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>
