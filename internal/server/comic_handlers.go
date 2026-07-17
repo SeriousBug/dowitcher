@@ -13,6 +13,7 @@ import (
 
 	"github.com/SeriousBug/longbox/internal/api"
 	"github.com/SeriousBug/longbox/internal/cbz"
+	"github.com/SeriousBug/longbox/internal/library"
 	"github.com/SeriousBug/longbox/internal/store"
 )
 
@@ -257,11 +258,13 @@ func (s *Server) generateCover(row store.ComicRow) ([]byte, error) {
 // or no hash to key it by. The key is the content hash rather than the id so a
 // re-scan of an unchanged file finds the cover it already generated, and an
 // edited file misses instead of serving the old cover forever.
+//
+// The layout is the scanner's, deliberately: this handler and the scanner share
+// one cache directory, and when they disagreed about its shape the scanner's
+// warming was dead work and every cover was decoded twice. library.CoverPathIn
+// is the one place the scheme is defined.
 func (s *Server) coverCachePath(row store.ComicRow) string {
-	if s.cfg.CoverCacheDir == "" || row.ContentHash == "" {
-		return ""
-	}
-	return filepath.Join(s.cfg.CoverCacheDir, row.ContentHash+".jpg")
+	return library.CoverPathIn(s.cfg.CoverCacheDir, row.ContentHash)
 }
 
 // handleSetProgress is the cross-device sync: the reader PUTs its position, and
@@ -317,7 +320,7 @@ func (s *Server) handleSetTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.store.SetComicTags(u.ID, id, req.Tags); err != nil {
+	if err := s.store.SetComicTags(u.ID, u.IsAdmin, id, req.Tags); err != nil {
 		if isNotFound(err) {
 			writeErr(w, http.StatusNotFound, "comic not found")
 			return

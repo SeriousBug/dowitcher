@@ -299,8 +299,26 @@ export interface LibraryStatus {
  * WSType discriminates a WSMessage. The client switches on it.
  */
 export type WSType = string;
+/**
+ * WSTypeLibrary is scan progress: a property of the server, identical for
+ * every user, and the only type the hub's replay cache accepts.
+ */
 export const WSTypeLibrary: WSType = "library";
+/**
+ * WSTypeComics is declared but NOTHING PRODUCES IT. Whoever writes that
+ * producer, read this first: a comic list is filtered by visibility, so it
+ * is per-user by definition. It must go out through Hub.BroadcastTo and
+ * never Hub.Broadcast, or one user's library is fanned out to every
+ * connected client. It must also never enter the hub's replay cache, which
+ * is keyed by message type alone and would hand that payload to whoever
+ * connects next. server.cacheable is what enforces the second half.
+ */
 export const WSTypeComics: WSType = "comics";
+/**
+ * WSTypeJobs and WSTypeJob are per-user: an import belongs to the user who
+ * started it, and its name is the folder they picked, which is usually the
+ * sensitive part. Both go out via Hub.BroadcastTo.
+ */
 export const WSTypeJobs: WSType = "jobs";
 export const WSTypeJob: WSType = "job";
 /**

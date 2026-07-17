@@ -21,11 +21,20 @@ import (
 // on: it already finished, or it died with a previous process.
 var ErrNotRunning = errors.New("imports: job is not running")
 
+// ErrTooManyImports means the user already has as many imports in flight as they
+// are allowed.
+var ErrTooManyImports = errors.New("imports: too many imports already running")
+
 // Broadcaster is the WS fan-out a job reports to. It is an interface so this
 // package does not depend on the server package — the dependency runs the other
 // way, and main wires the hub in.
+// Only BroadcastTo is declared. A job carries its owner, the folder name the
+// uploader picked (usually the sensitive part), the comic it produced and its
+// progress, so there is no such thing as an import message that belongs on
+// every socket. Not naming Broadcast here is what stops one being sent by
+// reflex.
 type Broadcaster interface {
-	Broadcast(api.WSMessage)
+	BroadcastTo(userID string, msg api.WSMessage)
 }
 
 const (
@@ -34,6 +43,15 @@ const (
 	// to every client — and a client that cannot keep up gets its frames dropped
 	// anyway. Four updates a second is more than a progress bar can show.
 	progressInterval = 250 * time.Millisecond
+	// maxPerUser bounds the imports one user can have in flight. Each running
+	// import fans its decode out over every core and holds a thumbnail per image,
+	// so two of them already saturate the machine; a client looping the upload
+	// endpoint would otherwise multiply that without limit.
+	//
+	// Two rather than one because queueing a second book while the first runs is
+	// the normal way to use this, and refusing it would be a worse tool for no
+	// safety gained.
+	maxPerUser = 2
 	// snapshotLimit bounds the job set the WS carries. The snapshot is the whole
 	// set rather than a delta, so it is sent in full on every connect; a user who
 	// has run five hundred imports does not need all of them to clear a spinner.
@@ -117,6 +135,12 @@ func (m *Manager) recover() error {
 
 // Begin registers a job before its bytes arrive, so an upload that takes minutes
 // shows up as an import immediately instead of appearing only once it lands.
+//
+// It is also where the per-user cap is enforced, because it is the only point
+// that runs before the upload does. Start is the other candidate and is the
+// wrong one: by then the user has spent minutes pushing several GB that the
+// server has written to disk, and refusing it there wastes all of that on both
+// ends. Rejecting here costs the client one request.
 func (m *Manager) Begin(userID string) (api.ImportJob, error) {
 	j := api.ImportJob{
 		ID:        store.NewID(),
@@ -124,12 +148,32 @@ func (m *Manager) Begin(userID string) (api.ImportJob, error) {
 		Stage:     api.StageUploading,
 		StartedAt: time.Now().Unix(),
 	}
-	if err := m.store.SaveImportJob(j); err != nil {
-		return api.ImportJob{}, err
-	}
+	// Counting and claiming the slot happen under one lock, or two uploads
+	// starting together would both count the other's absence and both proceed.
 	m.mu.Lock()
+	n := 0
+	for _, live := range m.running {
+		if live.snap.OwnerID == userID {
+			n++
+		}
+	}
+	if n >= maxPerUser {
+		m.mu.Unlock()
+		// No row is written: a job that never started should not sit in the
+		// user's history as a failure they have to read.
+		return api.ImportJob{}, fmt.Errorf("%w: %d already running", ErrTooManyImports, n)
+	}
 	m.running[j.ID] = &liveJob{snap: j}
 	m.mu.Unlock()
+
+	if err := m.store.SaveImportJob(j); err != nil {
+		// The slot was claimed before the row existed; a job with no row is one
+		// nothing will ever clear, so it must not keep occupying the cap.
+		m.mu.Lock()
+		delete(m.running, j.ID)
+		m.mu.Unlock()
+		return api.ImportJob{}, err
+	}
 	m.broadcast(j)
 	return j, nil
 }
@@ -444,11 +488,15 @@ func (m *Manager) save(j api.ImportJob) {
 	}
 }
 
+// broadcast reports a job to its owner alone. Fanning it out to everyone would
+// put the uploader's folder name, comic id and progress on every connected
+// socket, and the job list a client builds from these is per-user everywhere
+// else — the snapshot on connect, the REST listing, the store's own query.
 func (m *Manager) broadcast(j api.ImportJob) {
 	if m.hub == nil {
 		return
 	}
-	m.hub.Broadcast(api.WSMessage{Type: api.WSTypeJob, Job: &j})
+	m.hub.BroadcastTo(j.OwnerID, api.WSMessage{Type: api.WSTypeJob, Job: &j})
 }
 
 // failMessage maps a pipeline error onto something worth showing a user. The
@@ -464,6 +512,8 @@ func failMessage(err error) string {
 		return "unsupported output format"
 	case errors.Is(err, ErrBadQuality):
 		return "quality must be between 1 and 100"
+	case errors.Is(err, ErrTooManyFiles):
+		return fmt.Sprintf("this folder has more than %d images; import it as separate books", maxFiles)
 	}
 	return "the import failed; the server log has the details"
 }

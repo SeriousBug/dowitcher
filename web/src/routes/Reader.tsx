@@ -70,10 +70,10 @@ export function ReaderPage({ id }: { id: string }) {
   const isLandscape = useCallback(
     (index: number) => {
       const p = pages[index];
-      // AVIF pages can reach the store with no dimensions because the decoder
-      // never reported any. Assume portrait — overwhelmingly the common case —
-      // and let the measurement below correct the pairing once the real bytes
-      // land, rather than guessing landscape and splitting the book.
+      // Dimensions are optional in the API, absent whenever the server could
+      // not read an image header. Assume portrait — overwhelmingly the common
+      // case — and let the measurement below correct the pairing once the real
+      // bytes land, rather than guessing landscape and splitting the book.
       if (p?.width && p?.height) return p.width > p.height;
       return measuredLandscape.has(index);
     },

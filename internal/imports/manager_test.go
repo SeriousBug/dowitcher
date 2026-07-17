@@ -13,16 +13,25 @@ import (
 	"github.com/SeriousBug/longbox/internal/store"
 )
 
-// recorder collects what a job pushed to the hub.
+// recorder collects what a job pushed to the hub, and who it was addressed to.
 type recorder struct {
 	mu   sync.Mutex
 	msgs []api.WSMessage
+	to   []string
 }
 
-func (r *recorder) Broadcast(m api.WSMessage) {
+func (r *recorder) BroadcastTo(userID string, m api.WSMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.msgs = append(r.msgs, m)
+	r.to = append(r.to, userID)
+}
+
+// recipients is who the hub was asked to deliver to, in order.
+func (r *recorder) recipients() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.to...)
 }
 
 func (r *recorder) jobs() []api.ImportJob {
@@ -287,6 +296,43 @@ func TestManagerSnapshotPrefersLiveState(t *testing.T) {
 	}
 }
 
+// TestManagerCapsConcurrentImports: each import fans its decode out over every
+// core, so a client looping the upload endpoint would otherwise run as many as
+// it liked. The cap is enforced at Begin, before any bytes are uploaded.
+func TestManagerCapsConcurrentImports(t *testing.T) {
+	m, st, _, alice := testManager(t)
+	bob, err := st.CreateUser(store.NewID(), "bob", false)
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	var jobs []api.ImportJob
+	for i := range maxPerUser {
+		j, err := m.Begin(alice.ID)
+		if err != nil {
+			t.Fatalf("begin %d: %v", i, err)
+		}
+		jobs = append(jobs, j)
+	}
+	if _, err := m.Begin(alice.ID); !errors.Is(err, ErrTooManyImports) {
+		t.Fatalf("begin past the cap = %v, want ErrTooManyImports", err)
+	}
+	// The cap is per user, not server-wide.
+	if _, err := m.Begin(bob.ID); err != nil {
+		t.Fatalf("bob's first import must not be refused for alice's: %v", err)
+	}
+	// A refused import leaves no history behind: it never started.
+	if got := len(m.JobSnapshot(alice.ID)); got != maxPerUser {
+		t.Fatalf("alice has %d jobs, want %d — a refused Begin wrote a row", got, maxPerUser)
+	}
+
+	// Ending one frees the slot.
+	m.Fail(jobs[0].ID, "done with this one")
+	if _, err := m.Begin(alice.ID); err != nil {
+		t.Fatalf("a finished import must free the slot: %v", err)
+	}
+}
+
 func TestIsImageName(t *testing.T) {
 	for _, name := range []string{"a.png", "A.JPG", "x/y/z.webp", "p.avif"} {
 		if !IsImageName(name) {
@@ -296,6 +342,30 @@ func TestIsImageName(t *testing.T) {
 	for _, name := range []string{"a.txt", "notes", "cover.psd", "a.png.exe"} {
 		if IsImageName(name) {
 			t.Errorf("IsImageName(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestJobsAreAddressedToTheirOwner: every frame a job pushes names the user who
+// started it. A job carries the uploader's folder name and the comic it made,
+// and the hub fans an unaddressed message out to every socket on the server.
+func TestJobsAreAddressedToTheirOwner(t *testing.T) {
+	m, _, rec, user := testManager(t)
+	job, err := m.Begin(user.ID)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	m.Uploaded(job.ID, 3)
+	m.Fail(job.ID, "done here")
+
+	got := rec.recipients()
+	if len(got) == 0 {
+		t.Fatal("the job pushed nothing to the hub")
+	}
+	for i, to := range got {
+		if to != user.ID {
+			t.Fatalf("frame %d was addressed to %q, want the job's owner %q; "+
+				"an unowned frame reaches every connected client", i, to, user.ID)
 		}
 	}
 }

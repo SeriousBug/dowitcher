@@ -111,6 +111,28 @@ func ingest(ctx context.Context, files []*srcFile, decode bool, workers int, pro
 			out.byDigest[digest] = c
 
 			if !decode {
+				// Exact mode compares no pixels, but the file is still going into
+				// the CBZ — and the first time the library grid asks for that
+				// comic's cover, the cover generator decodes it. Skipping the
+				// decode here without vetting the header is what would let a
+				// decompression bomb be laundered into the library by an import
+				// that never looked at it, where it then kills the server on
+				// every grid load. The header read is ~0.1ms and is not the
+				// decode it is standing in for.
+				//
+				// Under the lock: exact mode has no decode to contend with, so
+				// the header read is cheap enough not to be worth the unlock
+				// dance below, and holding it keeps the digest's removal atomic
+				// against a racing worker carrying the same bytes.
+				if _, herr := headerDims(buf); herr != nil {
+					// The digest goes with it: groups are built from byDigest, so
+					// dropping the entry is what keeps the file out of the CBZ.
+					// A later file with these same bytes re-reads the header and
+					// is reported in its own right, which is what we want — each
+					// bomb is named.
+					delete(out.byDigest, digest)
+					out.skipped = append(out.skipped, fmt.Sprintf("skip (unreadable image): %s (%v)", f.rel, herr))
+				}
 				return nil
 			}
 			// Decode outside the lock; only this worker owns this digest.

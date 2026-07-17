@@ -94,6 +94,18 @@ func (s *Store) CountAdmins() (int, error) {
 	return n, err
 }
 
+// SetUserAdmin grants or revokes admin rights.
+func (s *Store) SetUserAdmin(id string, isAdmin bool) error {
+	res, err := s.db.Exec(`UPDATE users SET is_admin=? WHERE id=?`, boolInt(isAdmin), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteUser removes a user; credentials, sessions, uploads, collections and
 // progress cascade via FK.
 func (s *Store) DeleteUser(id string) error {
@@ -358,13 +370,22 @@ func (s *Store) DeleteExpiredSessions() error {
 // It is a fragment rather than a view so it can be ANDed into any query. Every
 // comic read path in this package must include it: enforcing visibility here
 // rather than in handlers means a new handler cannot forget to.
+//
+// The shared arm is restricted to collections owned by the comic's own owner
+// because only the uploader may opt their upload in. Without that, anyone who
+// could see a shared upload could add it to a collection of their own and share
+// that, and the exposure would outlive the uploader's unshare — sharing would be
+// irrevocable by anyone but the launderer. IS NOT DISTINCT FROM rather than = so
+// the two NULL owner_ids of a library comic in a library owner's collection
+// still match; library comics are covered by the source arm regardless.
 func visibleComics(userID string) (string, []any) {
 	const frag = `(comics.source='library'
 		OR comics.owner_id=?
 		OR EXISTS (
 			SELECT 1 FROM collection_comics cc
 			JOIN collections co ON co.id=cc.collection_id
-			WHERE cc.comic_id=comics.id AND co.shared=1))`
+			WHERE cc.comic_id=comics.id AND co.shared=1
+				AND co.owner_id IS NOT DISTINCT FROM comics.owner_id))`
 	return frag, []any{userID}
 }
 
@@ -579,9 +600,14 @@ func (s *Store) ListComicsFiltered(userID string, f ComicFilter) ([]api.Comic, i
 	where := []string{vis}
 	order := ` ORDER BY comics.series, comics.number, comics.added_at DESC`
 	if f.Collection != "" {
-		from += ` JOIN collection_comics cc ON cc.comic_id=comics.id`
-		where = append(where, `cc.collection_id=?`)
-		args = append(args, f.Collection)
+		from += ` JOIN collection_comics cc ON cc.comic_id=comics.id
+			JOIN collections ON collections.id=cc.collection_id`
+		// Defence in depth: the visibility fragment already decides which comics
+		// come back, and a filter must never be able to widen that. Gating the
+		// collection the caller filters by on the same rule the collection reads
+		// use keeps this filter from being the one place the premise breaks.
+		where = append(where, `cc.collection_id=?`, visibleCollections)
+		args = append(args, f.Collection, userID)
 		// A collection's order is the point of a collection, so it wins over the
 		// library's series ordering whenever one is being listed.
 		order = ` ORDER BY cc.position`
@@ -710,10 +736,28 @@ func placeholders(n int) string {
 }
 
 // SetComicTags replaces a comic's tags, creating tag rows as needed. It refuses
-// a comic the user cannot see.
-func (s *Store) SetComicTags(userID, comicID string, tags []string) error {
+// a comic the user cannot see, and — because tags are server-global — a comic
+// the user does not own: shared makes an upload readable, never writable, so
+// seeing someone's upload must not be a licence to rewrite what everybody reads
+// on it. Library comics have no uploader to defer to, so anyone who can see them
+// can tag them; admins are exempt. This is the same rule handleDeleteComic
+// applies to the other mutation of somebody else's upload.
+//
+// The refusal is ErrNotFound rather than a distinct sentinel purely because it
+// is the one the caller already maps: a non-owner CAN see a shared comic, so 404
+// is a small lie where 403 is the honest answer. It fails closed, which is what
+// matters here; see the note in the store review about giving this its own
+// sentinel once the handler can map it.
+func (s *Store) SetComicTags(userID string, isAdmin bool, comicID string, tags []string) error {
 	if _, err := s.GetComic(userID, comicID); err != nil {
 		return err
+	}
+	row, err := s.ComicRowByID(comicID)
+	if err != nil {
+		return err
+	}
+	if row.OwnerID != userID && row.Source != SourceLibrary && !isAdmin {
+		return ErrNotFound
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

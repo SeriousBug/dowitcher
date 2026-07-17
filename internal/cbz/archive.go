@@ -137,10 +137,20 @@ func (a *Archive) Page(i int) (io.ReadCloser, string, error) {
 // Cover opens the page ComicInfo.xml marks Type="FrontCover", falling back to
 // the first page. The marked page is addressed by its ComicInfo Image index,
 // which counts the archive's images in the same order we do.
+// The declared-size screen lives here rather than in Thumbnail because this is
+// the last point that still holds the *zip.File: every cover generator goes
+// Cover -> Thumbnail, and Thumbnail only ever sees an io.Reader, which cannot
+// say what the central directory claimed. Refusing here costs no I/O and keeps
+// Thumbnail's signature — and its callers — alone.
 func (a *Archive) Cover() (io.ReadCloser, error) {
 	i := 0
 	if n, ok := a.info.frontCover(); ok && n >= 0 && n < len(a.pages) {
 		i = n
+	}
+	if i < len(a.pages) {
+		if err := checkEntrySize(a.pages[i]); err != nil {
+			return nil, err
+		}
 	}
 	rc, _, err := a.Page(i)
 	return rc, err

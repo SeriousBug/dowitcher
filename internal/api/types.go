@@ -67,17 +67,17 @@ type CreateInviteRequest struct {
 // rescans: the watcher matches on it first and falls back to content hash so a
 // plain rename keeps reading progress and tags attached.
 type Comic struct {
-	ID        string `json:"id"`
-	Path      string `json:"path"`
-	Title     string `json:"title"`
-	Series    string `json:"series,omitempty"`
-	Number    string `json:"number,omitempty"`
-	Volume    string `json:"volume,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	PageCount int    `json:"pageCount"`
-	FileSize  int64  `json:"fileSize"`
-	AddedAt   int64  `json:"addedAt"`
-	ModifiedAt int64 `json:"modifiedAt"`
+	ID         string `json:"id"`
+	Path       string `json:"path"`
+	Title      string `json:"title"`
+	Series     string `json:"series,omitempty"`
+	Number     string `json:"number,omitempty"`
+	Volume     string `json:"volume,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	PageCount  int    `json:"pageCount"`
+	FileSize   int64  `json:"fileSize"`
+	AddedAt    int64  `json:"addedAt"`
+	ModifiedAt int64  `json:"modifiedAt"`
 	// Missing marks a comic whose file vanished. Rows are kept rather than
 	// deleted so an unmounted volume doesn't silently destroy tags and
 	// progress; the sweep clears the flag if the file comes back.
@@ -96,8 +96,8 @@ type Page struct {
 // ComicDetail is the reader's payload: the comic plus its page list and the
 // caller's own progress.
 type ComicDetail struct {
-	Comic    Comic    `json:"comic"`
-	Pages    []Page   `json:"pages"`
+	Comic    Comic     `json:"comic"`
+	Pages    []Page    `json:"pages"`
 	Progress *Progress `json:"progress,omitempty"`
 }
 
@@ -192,8 +192,8 @@ const (
 	// StageReading covers one combined pass: each image is read, hashed and
 	// thumbnailed in a single decode. The pipeline does not decode twice, so
 	// there is no separate thumbnailing stage to report.
-	StageReading  ImportStage = "reading"
-	StageGrouping ImportStage = "grouping"
+	StageReading   ImportStage = "reading"
+	StageGrouping  ImportStage = "grouping"
 	StageEncoding  ImportStage = "encoding"
 	StagePackaging ImportStage = "packaging"
 	StageDone      ImportStage = "done"
@@ -204,10 +204,10 @@ const (
 // Jobs are persisted because a large import outlives any one request and must
 // survive a restart well enough to report what happened.
 type ImportJob struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	OwnerID   string      `json:"ownerId"`
-	Stage     ImportStage `json:"stage"`
+	ID      string      `json:"id"`
+	Name    string      `json:"name"`
+	OwnerID string      `json:"ownerId"`
+	Stage   ImportStage `json:"stage"`
 	// Done/Total drive the progress bar. Total is 0 while it is still unknown.
 	Done  int `json:"done"`
 	Total int `json:"total"`
@@ -250,22 +250,34 @@ type DupeGroup struct {
 
 // LibraryStatus is what the scanner is currently doing.
 type LibraryStatus struct {
-	Scanning  bool   `json:"scanning"`
-	Done      int    `json:"done"`
-	Total     int    `json:"total"`
-	LastScan  int64  `json:"lastScan,omitempty"`
-	ComicCount int   `json:"comicCount"`
-	Root      string `json:"root"`
+	Scanning   bool   `json:"scanning"`
+	Done       int    `json:"done"`
+	Total      int    `json:"total"`
+	LastScan   int64  `json:"lastScan,omitempty"`
+	ComicCount int    `json:"comicCount"`
+	Root       string `json:"root"`
 }
 
 // WSType discriminates a WSMessage. The client switches on it.
 type WSType string
 
 const (
+	// WSTypeLibrary is scan progress: a property of the server, identical for
+	// every user, and the only type the hub's replay cache accepts.
 	WSTypeLibrary WSType = "library"
-	WSTypeComics  WSType = "comics"
-	WSTypeJobs    WSType = "jobs"
-	WSTypeJob     WSType = "job"
+	// WSTypeComics is declared but NOTHING PRODUCES IT. Whoever writes that
+	// producer, read this first: a comic list is filtered by visibility, so it
+	// is per-user by definition. It must go out through Hub.BroadcastTo and
+	// never Hub.Broadcast, or one user's library is fanned out to every
+	// connected client. It must also never enter the hub's replay cache, which
+	// is keyed by message type alone and would hand that payload to whoever
+	// connects next. server.cacheable is what enforces the second half.
+	WSTypeComics WSType = "comics"
+	// WSTypeJobs and WSTypeJob are per-user: an import belongs to the user who
+	// started it, and its name is the folder they picked, which is usually the
+	// sensitive part. Both go out via Hub.BroadcastTo.
+	WSTypeJobs WSType = "jobs"
+	WSTypeJob  WSType = "job"
 )
 
 // WSMessage is the push envelope. Payload fields are mutually exclusive

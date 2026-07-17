@@ -9,7 +9,9 @@ import (
 	"github.com/SeriousBug/longbox/internal/cbz"
 )
 
-// CoverPath is where a comic's cached cover lives.
+// CoverPathIn is where a comic's cached cover lives under coversDir. It returns
+// "" for a hash too short to shard, which is the "no cover can be cached for
+// this row" answer.
 //
 // The key is the content hash, not the comic id and not the path. A rename
 // therefore does not orphan the thumbnail -- the same bytes keep the same cover
@@ -21,11 +23,29 @@ import (
 // The first hex byte shards the tree: one directory per library is fine at a
 // hundred books and a problem at a hundred thousand, and the cheap fix is the
 // one every object store already uses.
-func (l *Library) CoverPath(hash string) string {
-	if len(hash) < 2 {
+//
+// It is a package-level function, and exported, because the scanner is not the
+// only thing that touches this cache: the cover handler in internal/server
+// reads and writes the same tree. The two had drifted onto different layouts,
+// so the scanner warmed a cache the handler could never hit and every first
+// cover request paid a full decode (~800ms for AVIF) that had already been paid
+// once. There is one scheme now, and this is it -- callers pass their own
+// covers dir rather than each deriving it.
+func CoverPathIn(coversDir, hash string) string {
+	if coversDir == "" || len(hash) < 2 {
 		return ""
 	}
-	return filepath.Join(l.cfg.DataDir, "covers", hash[:2], hash+".jpg")
+	return filepath.Join(coversDir, hash[:2], hash+".jpg")
+}
+
+// CoversDir is the cover cache root under a data dir. main hands the same
+// directory to the scanner and to the server, so the derivation lives here
+// rather than being spelled out at both ends.
+func CoversDir(dataDir string) string { return filepath.Join(dataDir, "covers") }
+
+// CoverPath is where this library's cached cover for hash lives.
+func (l *Library) CoverPath(hash string) string {
+	return CoverPathIn(CoversDir(l.cfg.DataDir), hash)
 }
 
 // Cover returns a comic's cover thumbnail as serve-ready JPEG, generating and

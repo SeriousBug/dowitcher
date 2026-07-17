@@ -2,6 +2,8 @@ package imports
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"image"
 	"image/draw"
 	"math"
@@ -49,11 +51,46 @@ var lanczos3 = xdraw.Kernel{Support: 3, At: func(t float64) float64 {
 	return 3 * math.Sin(x) * math.Sin(x/3) / (x * x)
 }}
 
+// errImageTooLarge marks a file whose header describes something no decoder
+// should be pointed at. It rides the same path as a decode failure: the file is
+// reported and skipped, not fatal to the import.
+var errImageTooLarge = errors.New("image dimensions exceed the limit")
+
+// maxPixels caps what any decode here may allocate. An image header declares
+// its own dimensions and image.Decode believes it, allocating width*height*4
+// before the source bytes run out and it gives up: a 100KB PNG whose IHDR says
+// 30000x30000 asks for 3.6GB and takes the process with it.
+//
+// 50MP is ~8600x5800, past any real scan — a double-page spread at 600dpi is
+// ~44MP — so nothing a comic import should accept lands above it.
+const maxPixels = 50_000_000
+
+// headerDims reads only the image header and vets what it claims. It is the
+// gate in front of every decode: the header read is a few hundred bytes and
+// ~0.1ms, against a decode that allocates whatever the header asked for.
+func headerDims(buf []byte) (image.Point, error) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(buf))
+	if err != nil {
+		return image.Point{}, err
+	}
+	dims := image.Point{X: cfg.Width, Y: cfg.Height}
+	if dims.X <= 0 || dims.Y <= 0 {
+		return image.Point{}, errZeroDim
+	}
+	if int64(dims.X)*int64(dims.Y) > maxPixels {
+		return image.Point{}, fmt.Errorf("%w: %dx%d", errImageTooLarge, dims.X, dims.Y)
+	}
+	return dims, nil
+}
+
 // thumbnail decodes buf and returns the image's true dimensions plus a 64x64
 // 8-bit grayscale buffer. That raw 4KB buffer is the whole "hash": there is no
 // perceptual hash anywhere in this pipeline, and the MAE threshold is tuned to
 // this representation.
 func thumbnail(buf []byte) (image.Point, []byte, error) {
+	if _, err := headerDims(buf); err != nil {
+		return image.Point{}, nil, err
+	}
 	src, _, err := image.Decode(bytes.NewReader(buf))
 	if err != nil {
 		return image.Point{}, nil, err
@@ -62,6 +99,11 @@ func thumbnail(buf []byte) (image.Point, []byte, error) {
 	dims := image.Point{X: b.Dx(), Y: b.Dy()}
 	if dims.X == 0 || dims.Y == 0 {
 		return image.Point{}, nil, errZeroDim
+	}
+	// The header is not the bitmap; a decoder is free to return bounds the
+	// header never promised, and those are what gets allocated below.
+	if int64(dims.X)*int64(dims.Y) > maxPixels {
+		return image.Point{}, nil, fmt.Errorf("%w: %dx%d", errImageTooLarge, dims.X, dims.Y)
 	}
 
 	// Grayscale first, then resize, matching PIL's convert("L").resize(...).

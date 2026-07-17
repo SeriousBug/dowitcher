@@ -19,11 +19,10 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The invite is not parked in a cookie: the ceremony holds it server-side,
+	// so a finish cannot name a different invite than the begin was authorised
+	// against.
 	s.setCeremonyCookie(w, cid)
-	// Park the invite token so finish can consume it. It rides in a cookie
-	// rather than the finish body because that body is the raw attestation the
-	// browser produced, which we do not get to add fields to.
-	s.setAuthCookie(w, inviteCookieName, req.Token)
 	writeJSON(w, http.StatusOK, opts)
 }
 
@@ -33,12 +32,7 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	inviteCookie, err := r.Cookie(inviteCookieName)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "no invite in progress")
-		return
-	}
-	userID, err := s.auth.FinishRegistration(cid, inviteCookie.Value, r)
+	userID, err := s.auth.FinishRegistration(cid, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

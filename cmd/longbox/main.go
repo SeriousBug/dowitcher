@@ -45,11 +45,17 @@ func main() {
 		sweepInterval = d
 	}
 
-	// Read the bypass before anything else: if it is set on an https origin the
-	// process must die here, not after it has opened a listener.
-	devAuth, err := auth.DevAuthFromEnv(origin)
+	// Read the bypass before anything else: if it is set somewhere it must not
+	// be, the process must die here, not after it has opened a listener. In a
+	// build without -tags dev there is no bypass to read and this always yields
+	// nil, which is the point of the tag.
+	devAuth, err := auth.DevAuthFromEnv(origin, addr)
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+	if devAuth == nil && auth.DevAuthRequested() {
+		log.Printf("%s is set, but this binary was not built with -tags dev; "+
+			"authentication stays ON", auth.DevAuthEnv)
 	}
 
 	st, err := store.Open(dbPath)
