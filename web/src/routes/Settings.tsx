@@ -7,9 +7,10 @@ import {
   Check,
   HardDrive,
   KeyRound,
-  LifeBuoy,
+  LogOut,
   Plus,
   RefreshCw,
+  RotateCcwKey,
   Trash2,
   ShieldCheck,
   Users as UsersIcon,
@@ -24,7 +25,7 @@ import { useLiveData } from "../live/LiveData";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { formatDate, formatRelative } from "../lib/format";
-import type { Invite, User } from "../api/generated";
+import type { Invite, SignedOutOthers, User } from "../api/generated";
 
 interface CreationOptions {
   publicKey: PublicKeyCredentialCreationOptionsJSON;
@@ -125,6 +126,24 @@ export function SettingsPage() {
     }
   }
 
+  const signOutOthers = useMutation({
+    mutationFn: () => http.post<SignedOutOthers>("/auth/logout/others"),
+    onSuccess: ({ revoked }) => {
+      toaster.create({
+        type: "success",
+        title:
+          revoked === 0
+            ? "Nothing else was signed in"
+            : `Signed out ${revoked} other ${revoked === 1 ? "device" : "devices"}`,
+        description:
+          revoked === 0
+            ? "This is the only device with a live session."
+            : "Your passkeys still work — signing back in is all it takes.",
+      });
+    },
+    onError: failed("Couldn't sign out your other devices"),
+  });
+
   const createInvite = useMutation({
     mutationFn: (isAdmin: boolean) => http.post<Invite>("/api/invites", { isAdmin }),
     onSuccess: (invite) => {
@@ -223,9 +242,20 @@ export function SettingsPage() {
         icon={<KeyRound size={17} className={css({ color: "textMuted" })} />}
         title="Your passkeys"
         action={
-          <Button icon={<Plus size={15} />} busy={enrolling} onClick={addPasskey}>
-            Add a passkey
-          </Button>
+          <div className={hstack({ gap: "2" })}>
+            <Button
+              variant="ghost"
+              icon={<LogOut size={15} />}
+              title="Cuts every session but this one. Your passkeys keep working."
+              busy={signOutOthers.isPending}
+              onClick={() => signOutOthers.mutate()}
+            >
+              Sign out other devices
+            </Button>
+            <Button icon={<Plus size={15} />} busy={enrolling} onClick={addPasskey}>
+              Add a passkey
+            </Button>
+          </div>
         }
       >
         {credentials.length === 0 ? (
@@ -346,14 +376,21 @@ export function SettingsPage() {
                   }`}
                 >
                   <div className={hstack({ gap: "1", flexShrink: 0 })}>
+                    {/*
+                      A life buoy meant nothing to anyone who did not already
+                      know what this does, and a native title tooltip never
+                      appears on touch at all. It also sits one target away from
+                      delete, so what it mints is spelled out rather than hinted.
+                    */}
                     <Button
                       variant="ghost"
-                      icon={<LifeBuoy size={15} />}
-                      aria-label={`Make a recovery link for ${person.name}`}
-                      title="Lost their passkey? This mints a one-time link to enrol a new one."
+                      icon={<RotateCcwKey size={15} />}
+                      title={`Lost their passkey? This mints a one-time link for ${person.name} to enrol a new one.`}
                       busy={resetUser.isPending && resetUser.variables?.id === person.id}
                       onClick={() => resetUser.mutate(person)}
-                    />
+                    >
+                      Recovery link
+                    </Button>
                     <button
                       onClick={() => setConfirmDeleteUser(person)}
                       // Deleting yourself is a locked door with the key inside.

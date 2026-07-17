@@ -85,7 +85,13 @@ export function Login() {
         })}
       >
         {busy ? (
-          <Loader2 size={19} className={css({ animation: "spin 0.9s linear infinite" })} />
+          <Loader2
+            size={19}
+            className={css({
+              animation: "spin 0.9s linear infinite",
+              _motionReduce: { animation: "none" },
+            })}
+          />
         ) : (
           <Fingerprint size={19} />
         )}
@@ -141,6 +147,7 @@ export function AuthCard({ children }: { children: ReactNode }) {
 export function ErrorBanner({ children }: { children: ReactNode }) {
   return (
     <div
+      role="alert"
       className={flex({
         align: "center",
         gap: "2.5",

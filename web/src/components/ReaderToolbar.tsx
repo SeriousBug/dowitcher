@@ -114,6 +114,9 @@ export function ReaderToolbar({
         </span>
       </div>
 
+      {/* The visible counter is hidden below sm, and display:none takes it out of
+          the a11y tree with the live region — so page turns go unannounced on a
+          phone. The srOnly twin is always in the tree and does the announcing. */}
       <span
         className={css({
           fontFamily: "mono",
@@ -122,8 +125,11 @@ export function ReaderToolbar({
           flexShrink: 0,
           display: { base: "none", sm: "block" },
         })}
-        aria-live="polite"
+        aria-hidden
       >
+        {pageCount ? `${page + 1} / ${pageCount}` : "—"}
+      </span>
+      <span className={css({ srOnly: true })} aria-live="polite">
         {pageCount ? `${page + 1} / ${pageCount}` : "—"}
       </span>
 

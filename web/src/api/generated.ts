@@ -45,6 +45,13 @@ export interface Session {
   credentials: Credential[];
 }
 /**
+ * SignedOutOthers is the response of POST /auth/logout/others. Revoked counts
+ * the sessions that were cut, not including the caller's own, which survives.
+ */
+export interface SignedOutOthers {
+  revoked: number /* int64 */;
+}
+/**
  * Invite is a single-use enrollment link. ForUser set means the link enrolls an
  * additional passkey onto an existing account instead of creating one.
  */

@@ -117,6 +117,26 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handleLogoutOthers revokes every session the caller holds except the one they
+// are calling from. It is the lever for "I left myself signed in somewhere I no
+// longer control" — the passkey stays valid, so the answer to a borrowed laptop
+// is not to retire a credential that is still perfectly good.
+//
+// The caller's own session is kept for the same reason handleDeleteCredential
+// keeps it: signing you out of the device you are securing things from is not
+// what the button offers. An empty token would revoke everything, but requireAuth
+// guarantees there is one.
+func (s *Server) handleLogoutOthers(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	n, err := s.store.DeleteUserSessionsExcept(u.ID, sessionTokenFrom(r.Context()))
+	if err != nil {
+		log.Printf("logout others: revoke sessions for %s: %v", u.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, api.SignedOutOthers{Revoked: n})
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
 	creds, err := s.store.CredentialsByUser(u.ID)
@@ -150,7 +170,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // the safe side of a decision the security of the flow rests on.
 func (s *Server) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
-	if err := s.store.DeleteUserSessionsExcept(u.ID, sessionTokenFrom(r.Context())); err != nil {
+	if _, err := s.store.DeleteUserSessionsExcept(u.ID, sessionTokenFrom(r.Context())); err != nil {
 		log.Printf("delete credential: revoke sessions for %s: %v", u.ID, err)
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return

@@ -197,6 +197,61 @@ func TestEnrollAndLogin(t *testing.T) {
 	}
 }
 
+// TestLogoutOthersCutsEveryOtherDevice: the whole point of the button is that
+// the device you press it from stays signed in while every other one does not,
+// so both halves are pinned here. The passkey is untouched, which is why the
+// second client can sign straight back in afterwards.
+func TestLogoutOthersCutsEveryOtherDevice(t *testing.T) {
+	ts, st, client := testServer(t, nil)
+	token := bootstrapToken(t, st, ts.URL)
+	pk := newPasskey(ts.URL)
+	if resp, body := pk.enroll(t, client, ts.URL, token, "Alice"); resp.StatusCode != 200 {
+		t.Fatalf("enroll: %d %s", resp.StatusCode, body)
+	}
+
+	// A second jar is a second device: same passkey, its own session cookie.
+	jar, _ := cookiejar.New(nil)
+	other := &http.Client{Jar: jar}
+	if resp, body := pk.login(t, other, ts.URL); resp.StatusCode != 200 {
+		t.Fatalf("second device login: %d %s", resp.StatusCode, body)
+	}
+	if r, _ := getReq(t, other, ts.URL+"/auth/me"); r.StatusCode != 200 {
+		t.Fatalf("second device should start signed in, got %d", r.StatusCode)
+	}
+
+	resp, body := post(t, client, ts.URL+"/auth/logout/others", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("logout/others: %d %s", resp.StatusCode, body)
+	}
+	var out api.SignedOutOthers
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Revoked != 1 {
+		t.Errorf("revoked = %d, want 1", out.Revoked)
+	}
+
+	if r, _ := getReq(t, other, ts.URL+"/auth/me"); r.StatusCode != 401 {
+		t.Errorf("the other device must be signed out, got %d", r.StatusCode)
+	}
+	if r, _ := getReq(t, client, ts.URL+"/auth/me"); r.StatusCode != 200 {
+		t.Errorf("the calling device must stay signed in, got %d", r.StatusCode)
+	}
+	if resp, body := pk.login(t, other, ts.URL); resp.StatusCode != 200 {
+		t.Fatalf("revocation must not harm the passkey: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestLogoutOthersNeedsASession: an unauthenticated caller must not be able to
+// reach a revocation route at all.
+func TestLogoutOthersNeedsASession(t *testing.T) {
+	ts, _, _ := testServer(t, nil)
+	jar, _ := cookiejar.New(nil)
+	if resp, _ := post(t, &http.Client{Jar: jar}, ts.URL+"/auth/logout/others", nil); resp.StatusCode != 401 {
+		t.Fatalf("want 401 for an anonymous caller, got %d", resp.StatusCode)
+	}
+}
+
 // TestInviteIsSingleUse: an invite mints exactly one account, and the link is
 // dead the moment it has.
 func TestInviteIsSingleUse(t *testing.T) {
