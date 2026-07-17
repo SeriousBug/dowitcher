@@ -1,0 +1,4 @@
+# Refuse to install anything published in the last 7 days. A compromised
+# release is nearly always caught and yanked well inside that window, so
+# waiting costs nothing and skips the blast radius of a fresh supply-chain hit.
+minimumReleaseAge: 10080

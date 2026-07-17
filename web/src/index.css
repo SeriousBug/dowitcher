@@ -1,0 +1,48 @@
+@layer reset, base, tokens, recipes, utilities;
+
+/* Reconnecting: breathe between a bright and a dim amber, so a blip reads as
+   "working on it" rather than as the red down state. */
+@keyframes conn-amber-breathe {
+  0%,
+  100% {
+    background: var(--colors-amber-500);
+    box-shadow:
+      0 0 5px 1px color-mix(in srgb, var(--colors-amber-500) 65%, transparent),
+      0 0 12px 3px color-mix(in srgb, var(--colors-amber-500) 35%, transparent);
+  }
+  50% {
+    background: var(--colors-amber-600);
+    box-shadow: 0 0 3px 0 color-mix(in srgb, var(--colors-amber-600) 45%, transparent);
+  }
+}
+
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+/* Connected: a steady halo. Nothing moves on a healthy page. */
+.conn-dot--open {
+  background: var(--colors-verdigris-500);
+  box-shadow: 0 0 4px 0 color-mix(in srgb, var(--colors-verdigris-500) 55%, transparent);
+}
+.conn-dot--connecting {
+  animation: conn-amber-breathe 2.8s ease-in-out infinite;
+}
+/* Disconnected: glows so it is findable, but holds still — the retry has given
+   up, so there is nothing in progress to animate. */
+.conn-dot--closed {
+  background: var(--colors-rust-500);
+  box-shadow: 0 0 5px 0 color-mix(in srgb, var(--colors-rust-500) 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
