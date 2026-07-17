@@ -5,8 +5,10 @@ import {
   ArrowRightLeft,
   ArrowUpDown,
   BookOpen,
+  Expand,
   Keyboard,
   Maximize,
+  Shrink,
   X,
 } from "lucide-react";
 import { css, cx } from "styled-system/css";
@@ -49,6 +51,8 @@ export function ReaderToolbar({
   onSpread,
   rtl,
   onRtl,
+  fullscreen,
+  onFullscreen,
   visible,
   onShortcuts,
   download,
@@ -62,6 +66,10 @@ export function ReaderToolbar({
   onSpread: (on: boolean) => void;
   rtl: boolean;
   onRtl: (on: boolean) => void;
+  /** null when fullscreen isn't on offer (standalone PWA or no API); the
+   *  toolbar then omits the control entirely. */
+  fullscreen: boolean | null;
+  onFullscreen: () => void;
   visible: boolean;
   onShortcuts: () => void;
   /** Slot rather than a comic id: the toolbar has no business knowing what a
@@ -176,6 +184,18 @@ export function ReaderToolbar({
         >
           <ArrowRightLeft size={16} />
         </button>
+
+        {fullscreen !== null && (
+          <button
+            onClick={onFullscreen}
+            aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            aria-pressed={fullscreen}
+            title={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            className={cx(iconButton, fullscreen ? TOGGLE_STATE.on : TOGGLE_STATE.off)}
+          >
+            {fullscreen ? <Shrink size={16} /> : <Expand size={16} />}
+          </button>
+        )}
 
         <button
           onClick={onShortcuts}

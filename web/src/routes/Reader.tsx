@@ -15,6 +15,7 @@ import { cacheComicDetail, readComicDetail } from "../offline/metaCache";
 import { enqueueProgress, saveProgress as putProgress } from "../offline/progressQueue";
 import { buildSpreads, spreadIndexOf } from "../lib/ReaderLayout";
 import { useFitMode, useRtl, useSpread } from "../lib/ReaderPrefs";
+import { useFullscreen } from "../lib/useFullscreen";
 import { comicLabel } from "../lib/format";
 import type { FitMode } from "../lib/ReaderPrefs";
 import type { ComicDetail, Progress, ProgressRequest } from "../api/generated";
@@ -84,6 +85,7 @@ export function ReaderPage({ id }: { id: string }) {
   const [fit, setFit] = useFitMode();
   const [spread, setSpread] = useSpread();
   const [rtl, setRtl] = useRtl(id);
+  const { active: fullscreen, toggle: toggleFullscreen } = useFullscreen();
 
   const [page, setPage] = useState(0);
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -295,6 +297,10 @@ export function ReaderPage({ id }: { id: string }) {
             setResumeOffer(null);
             break;
           }
+          // In fullscreen, Escape is the browser's own way out of it — the same
+          // press must not also close the comic out from under the reader. The
+          // browser exits fullscreen; we do nothing and stay in the reader.
+          if (fullscreen) return;
           close();
           return;
         case "ArrowRight":
@@ -325,6 +331,12 @@ export function ReaderPage({ id }: { id: string }) {
           break;
         case "f":
           setFit(FIT_CYCLE[(FIT_CYCLE.indexOf(fit) + 1) % FIT_CYCLE.length]!);
+          break;
+        case "F":
+          // Shift+f, paired with plain f for fit. No-op where fullscreen isn't
+          // on offer (standalone PWA, iOS Safari) rather than a dead keypress.
+          if (fullscreen === null) return;
+          toggleFullscreen();
           break;
         case "s":
           setSpread(!spread);
@@ -366,6 +378,8 @@ export function ReaderPage({ id }: { id: string }) {
     setSpread,
     rtl,
     setRtl,
+    fullscreen,
+    toggleFullscreen,
   ]);
 
   // A fit-width page is taller than the viewport, so a turn that kept the scroll
@@ -571,6 +585,8 @@ export function ReaderPage({ id }: { id: string }) {
         onSpread={setSpread}
         rtl={rtl}
         onRtl={setRtl}
+        fullscreen={fullscreen}
+        onFullscreen={toggleFullscreen}
         visible={chromeVisible}
         onShortcuts={() => setShortcutsOpen(true)}
         download={<DownloadButton comicId={id} />}
