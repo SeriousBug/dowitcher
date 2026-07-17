@@ -160,9 +160,11 @@ type ImportStage string
 
 const (
 	StageUploading ImportStage = "uploading"
-	StageHashing   ImportStage = "hashing"
-	StageThumbing  ImportStage = "thumbnailing"
-	StageGrouping  ImportStage = "grouping"
+	// StageReading covers one combined pass: each image is read, hashed and
+	// thumbnailed in a single decode. The pipeline does not decode twice, so
+	// there is no separate thumbnailing stage to report.
+	StageReading  ImportStage = "reading"
+	StageGrouping ImportStage = "grouping"
 	StageEncoding  ImportStage = "encoding"
 	StagePackaging ImportStage = "packaging"
 	StageDone      ImportStage = "done"

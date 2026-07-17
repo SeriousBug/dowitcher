@@ -70,7 +70,7 @@ func ingest(ctx context.Context, files []*srcFile, decode bool, workers int, pro
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(workers)
 
-	progress(api.StageHashing, 0, len(files))
+	progress(api.StageReading, 0, len(files))
 	for _, f := range files {
 		if gctx.Err() != nil {
 			break
@@ -87,7 +87,7 @@ func ingest(ctx context.Context, files []*srcFile, decode bool, workers int, pro
 			mu.Lock()
 			defer func() {
 				done++
-				progress(api.StageHashing, done, len(files))
+				progress(api.StageReading, done, len(files))
 				mu.Unlock()
 			}()
 			if err != nil {

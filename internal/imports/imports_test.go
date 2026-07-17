@@ -703,7 +703,7 @@ func TestProgressReachesDone(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []api.ImportStage{api.StageHashing, api.StageGrouping, api.StagePackaging, api.StageDone} {
+	for _, s := range []api.ImportStage{api.StageReading, api.StageGrouping, api.StagePackaging, api.StageDone} {
 		if !seen[s] {
 			t.Errorf("stage %s never reported", s)
 		}

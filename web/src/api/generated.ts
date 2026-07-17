@@ -58,6 +58,20 @@ export interface Invite {
   isAdmin: boolean;
 }
 /**
+ * EnrollRequest redeems an invite link. Name is ignored for a recovery invite,
+ * which already knows the account it belongs to.
+ */
+export interface EnrollRequest {
+  token: string;
+  name: string;
+}
+/**
+ * CreateInviteRequest mints a new-user invite.
+ */
+export interface CreateInviteRequest {
+  isAdmin: boolean;
+}
+/**
  * Comic is one CBZ in the library.
  * Path is relative to the library root and is the stable identity across
  * rescans: the watcher matches on it first and falls back to content hash so a
@@ -163,8 +177,12 @@ export interface ProgressRequest {
  */
 export type ImportStage = string;
 export const StageUploading: ImportStage = "uploading";
-export const StageHashing: ImportStage = "hashing";
-export const StageThumbing: ImportStage = "thumbnailing";
+/**
+ * StageReading covers one combined pass: each image is read, hashed and
+ * thumbnailed in a single decode. The pipeline does not decode twice, so
+ * there is no separate thumbnailing stage to report.
+ */
+export const StageReading: ImportStage = "reading";
 export const StageGrouping: ImportStage = "grouping";
 export const StageEncoding: ImportStage = "encoding";
 export const StagePackaging: ImportStage = "packaging";

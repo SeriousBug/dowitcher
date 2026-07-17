@@ -16,8 +16,7 @@ import type { ImportJob, ImportOptions } from "../api/generated";
 
 const STAGE_LABEL: Record<string, string> = {
   uploading: "Uploading",
-  hashing: "Fingerprinting pages",
-  thumbnailing: "Making thumbnails",
+  reading: "Fingerprinting pages",
   grouping: "Finding duplicates",
   encoding: "Re-encoding pages",
   packaging: "Packing the CBZ",
