@@ -24,6 +24,13 @@ import type { ComicDetail, Progress, ProgressRequest } from "../api/generated";
  *  picking up your phone mid-page still saves. */
 const PROGRESS_DEBOUNCE_MS = 1200;
 const CHROME_IDLE_MS = 2500;
+// A tap asks for the controls on purpose, so hold them long enough to read and
+// use; the pointer's idle-hide is far too quick for a deliberate summon.
+const CHROME_TAP_MS = 10000;
+// A touchscreen fires a synthetic mousemove after a tap or swipe. Ignore the
+// mousemove path for this long afterward so a page-turn gesture doesn't pop the
+// chrome it meant to leave down.
+const TOUCH_MOUSE_GRACE_MS = 500;
 const SWIPE_MIN_PX = 48;
 // Closing the comic is the one gesture that throws away what you were doing, so
 // it is deliberately hard to trigger by accident: a drag two and a half times
@@ -89,6 +96,10 @@ export function ReaderPage({ id }: { id: string }) {
 
   const [page, setPage] = useState(0);
   const [chromeVisible, setChromeVisible] = useState(true);
+  // The left/right arrows label the pointer tap-zones, so they only make sense
+  // when a pointer summoned the chrome. Turning pages from the keyboard reveals
+  // the toolbar and scrubber but leaves these off.
+  const [arrowsVisible, setArrowsVisible] = useState(true);
   const [chromePinned, setChromePinned] = useState(false);
   const [activity, setActivity] = useState(0);
   const [resumeOffer, setResumeOffer] = useState<number | null>(null);
@@ -256,8 +267,15 @@ export function ReaderPage({ id }: { id: string }) {
     [turnReading, rtl],
   );
 
-  const showChrome = useCallback(() => {
+  // How long the current reveal waits before hiding. A hover keeps refreshing a
+  // short window; a tap sets a long one. Read inside the idle effect, which
+  // re-runs on every reveal via the activity bump.
+  const hideDelayRef = useRef(CHROME_IDLE_MS);
+
+  const showChrome = useCallback((withArrows = true, hideAfter = CHROME_IDLE_MS) => {
+    hideDelayRef.current = hideAfter;
     setChromeVisible(true);
+    setArrowsVisible(withArrows);
     setActivity((n) => n + 1);
   }, []);
 
@@ -265,7 +283,7 @@ export function ReaderPage({ id }: { id: string }) {
   // stop seeing but keep paying pixels for.
   useEffect(() => {
     if (!chromeVisible || chromePinned || resumeOffer !== null || shortcutsOpen) return;
-    const timer = window.setTimeout(() => setChromeVisible(false), CHROME_IDLE_MS);
+    const timer = window.setTimeout(() => setChromeVisible(false), hideDelayRef.current);
     return () => window.clearTimeout(timer);
   }, [chromeVisible, chromePinned, resumeOffer, shortcutsOpen, activity]);
 
@@ -350,8 +368,9 @@ export function ReaderPage({ id }: { id: string }) {
         default:
           return;
       }
-      // A key press means the reader is here; remind them where they are.
-      showChrome();
+      // The chrome stays down for keyboard use: someone driving from the
+      // keyboard can read the page count in the URL-free reader by tapping or
+      // hovering, and the toolbar sliding in on every page turn is just flicker.
     }
     // Capture, so this runs before the dialog's own Escape handling rather than
     // after it. Ark closes on Escape from a listener below us, and React flushes
@@ -368,7 +387,6 @@ export function ReaderPage({ id }: { id: string }) {
     turnReading,
     jump,
     pageCount,
-    showChrome,
     close,
     shortcutsOpen,
     resumeOffer,
@@ -444,8 +462,10 @@ export function ReaderPage({ id }: { id: string }) {
 
   const touchRef = useRef<{ x: number; y: number } | null>(null);
   const swipedRef = useRef(false);
+  const lastTouchRef = useRef(0);
 
   const onTouchStart = (e: React.TouchEvent) => {
+    lastTouchRef.current = Date.now();
     // Two fingers is a pinch-zoom; leave it entirely to the browser.
     if (e.touches.length !== 1) {
       touchRef.current = null;
@@ -456,6 +476,7 @@ export function ReaderPage({ id }: { id: string }) {
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
+    lastTouchRef.current = Date.now();
     const start = touchRef.current;
     touchRef.current = null;
     if (!start || e.changedTouches.length !== 1) return;
@@ -563,7 +584,10 @@ export function ReaderPage({ id }: { id: string }) {
 
   return (
     <div
-      onMouseMove={showChrome}
+      onMouseMove={() => {
+        if (Date.now() - lastTouchRef.current < TOUCH_MOUSE_GRACE_MS) return;
+        showChrome();
+      }}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
       className={cx(
@@ -629,7 +653,7 @@ export function ReaderPage({ id }: { id: string }) {
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && canGoLeft ? 0.7 : 0,
+          opacity: chromeVisible && arrowsVisible && canGoLeft ? 0.7 : 0,
           transition: "opacity 0.25s ease",
           _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
@@ -639,7 +663,7 @@ export function ReaderPage({ id }: { id: string }) {
       </button>
 
       <button
-        onClick={guard(() => (chromeVisible ? setChromeVisible(false) : showChrome()))}
+        onClick={guard(() => (chromeVisible ? setChromeVisible(false) : showChrome(true, CHROME_TAP_MS)))}
         aria-label={chromeVisible ? "Hide reader controls" : "Show reader controls"}
         title={chromeVisible ? "Hide reader controls" : "Show reader controls"}
         className={css({
@@ -668,7 +692,7 @@ export function ReaderPage({ id }: { id: string }) {
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && canGoRight ? 0.7 : 0,
+          opacity: chromeVisible && arrowsVisible && canGoRight ? 0.7 : 0,
           transition: "opacity 0.25s ease",
           _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
