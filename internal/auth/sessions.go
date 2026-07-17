@@ -8,8 +8,13 @@ import (
 	"github.com/SeriousBug/longbox/internal/store"
 )
 
-// SessionTTL is how long a session cookie stays valid.
-const SessionTTL = 30 * 24 * time.Hour
+// SessionTTL is how long a session cookie stays valid. It is long because the
+// installed web app must survive being offline for extended stretches, and a
+// reader that logs itself out mid-flight cannot re-authenticate: the passkey
+// ceremony needs the server. A long TTL is only tenable because sessions are
+// revocable rows rather than signed claims — see randToken and
+// store.DeleteUserSessions.
+const SessionTTL = 365 * 24 * time.Hour
 
 // SessionCookieName is the HttpOnly session cookie.
 const SessionCookieName = "longbox_session"

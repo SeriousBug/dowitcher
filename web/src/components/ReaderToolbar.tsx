@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import {
   ArrowLeftRight,
   ArrowRightLeft,
@@ -48,6 +49,7 @@ export function ReaderToolbar({
   rtl,
   onRtl,
   visible,
+  download,
 }: {
   title: string;
   page: number;
@@ -59,6 +61,9 @@ export function ReaderToolbar({
   rtl: boolean;
   onRtl: (on: boolean) => void;
   visible: boolean;
+  /** Slot rather than a comic id: the toolbar has no business knowing what a
+   *  download is, and the reader already holds the one it would ask about. */
+  download?: ReactNode;
 }) {
   return (
     <header
@@ -120,6 +125,7 @@ export function ReaderToolbar({
       </span>
 
       <div className={hstack({ gap: "1", flex: "1", justify: "flex-end" })}>
+        {download}
         <div
           className={flex({
             gap: "0.5",

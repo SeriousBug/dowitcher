@@ -13,6 +13,7 @@ import { useLiveData } from "../live/LiveData";
 import { wsClient } from "../api/ws";
 import { HttpError } from "../api/http";
 import { fetchComics } from "../api/comics";
+import { cacheLibraryPage, readLibraryPage } from "../offline/metaCache";
 import { comicLabel } from "../lib/format";
 import type { Comic, Progress } from "../api/generated";
 
@@ -77,9 +78,29 @@ export function LibraryPage() {
     [queryClient],
   );
 
+  const filterKey = `${q ?? ""}|${tag ?? ""}`;
+
   const comicsQuery = useInfiniteQuery({
     queryKey: ["comics", { q: q ?? "", tag: tag ?? "" }],
-    queryFn: ({ pageParam }) => fetchComics({ q, tag }, pageParam),
+    // Read through the offline copy of the shelf. Only the first page is kept:
+    // offline there is nothing behind "Show more" to fetch anyway, and caching
+    // every scroll depth of every search anyone ever typed would grow without
+    // bound for a list they can't page through.
+    queryFn: async ({ pageParam }) => {
+      try {
+        const page = await fetchComics({ q, tag }, pageParam);
+        if (pageParam === 0) void cacheLibraryPage(filterKey, page);
+        return page;
+      } catch (err) {
+        if (err instanceof HttpError || pageParam !== 0) throw err;
+        const cached = await readLibraryPage(filterKey);
+        // Returning cached data resolves the query, so it never enters the
+        // retry backoff — offline, the shelf is on screen immediately rather
+        // than after three doomed attempts.
+        if (cached) return cached;
+        throw err;
+      }
+    },
     initialPageParam: 0,
     getNextPageParam: (last, all) => {
       const loaded = all.reduce((n, p) => n + p.comics.length, 0);

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SeriousBug/longbox/internal/api"
 	"github.com/SeriousBug/longbox/internal/cbz"
@@ -299,7 +300,55 @@ func (s *Server) handleSetProgress(w http.ResponseWriter, r *http.Request) {
 	if comic.PageCount > 0 && page >= comic.PageCount-1 {
 		completed = true
 	}
-	p, err := s.store.SetProgress(u.ID, comic.ID, page, completed)
+
+	// When the client observed this position, not when it reached us. An offline
+	// client replays a queue on reconnect, so arrival order is not reading order.
+	observedAt := req.UpdatedAt
+	now := time.Now().Unix()
+	switch {
+	case observedAt == 0:
+		// No claim: the client is a plain online reader, so the write is happening
+		// now by definition. This is what keeps every existing caller working.
+		observedAt = now
+	case observedAt > now:
+		// Client clocks are not trustworthy. A phone whose clock is a year fast
+		// would otherwise store a timestamp no honest write could ever beat and
+		// pin its position forever. The server clock is the ceiling: a claim from
+		// the future is worth exactly as much as a claim of "now", and that costs
+		// a client with a slightly fast clock nothing.
+		observedAt = now
+	}
+
+	// A stale write is one whose position was read before what we already have.
+	// Losing it is the point, but no progress row means nothing to lose.
+	if cur, err := s.store.GetProgress(u.ID, comic.ID); err == nil && observedAt < cur.UpdatedAt {
+		// Completion is not a position, so it does not lose the same way: finishing
+		// a comic on a plane is real, and the page you happen to be on later does
+		// not un-finish it. Same rule as above — only ever set, never cleared — so
+		// the stale claim can carry its completion in while its page stays out. The
+		// stored observation time is kept: the page it describes is still the newer
+		// one, and moving it would let the next stale replay win.
+		if completed && !cur.Completed {
+			cur, err = s.store.SetProgressAt(u.ID, comic.ID, cur.Page, true, cur.UpdatedAt)
+			if err != nil {
+				log.Printf("set progress %s: %v", comic.ID, err)
+				writeErr(w, http.StatusInternalServerError, "db error")
+				return
+			}
+		}
+		// 200 with the stored row, not a conflict. Nothing went wrong that the
+		// client can act on — the server already holds a newer truth — and a client
+		// draining an offline queue needs to converge on that truth and drop the
+		// entry, whereas an error would have it retry a write that can never win.
+		writeJSON(w, http.StatusOK, cur)
+		return
+	} else if err != nil && !isNotFound(err) {
+		log.Printf("get progress %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	p, err := s.store.SetProgressAt(u.ID, comic.ID, page, completed, observedAt)
 	if err != nil {
 		if isNotFound(err) {
 			writeErr(w, http.StatusNotFound, "comic not found")

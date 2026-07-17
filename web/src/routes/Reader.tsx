@@ -4,11 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookX, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { css, cx } from "styled-system/css";
 import { flex, vstack } from "styled-system/patterns";
+import { DownloadButton } from "../components/DownloadButton";
 import { ReaderPageImage, pageSrc } from "../components/ReaderPageImage";
 import { ReaderResumeBanner } from "../components/ReaderResumeBanner";
 import { ReaderScrubber } from "../components/ReaderScrubber";
 import { ReaderToolbar } from "../components/ReaderToolbar";
 import { http, HttpError } from "../api/http";
+import { cacheComicDetail, readComicDetail } from "../offline/metaCache";
+import { enqueueProgress, saveProgress as putProgress } from "../offline/progressQueue";
 import { buildSpreads, spreadIndexOf } from "../lib/ReaderLayout";
 import { useFitMode, useRtl, useSpread } from "../lib/ReaderPrefs";
 import { comicLabel } from "../lib/format";
@@ -43,7 +46,25 @@ export function ReaderPage({ id }: { id: string }) {
 
   const { data: detail, isLoading } = useQuery({
     queryKey: ["comic", id],
-    queryFn: () => http.get<ComicDetail>(`/api/comics/${id}`),
+    // Read through to the offline copy. A downloaded comic has every page on
+    // disk, and the only thing standing between the reader and them is this
+    // request — so when it can't be made, the cached page list stands in and
+    // the query *succeeds*. Rethrowing instead would spend the retry backoff
+    // before showing a comic that was never actually unavailable.
+    queryFn: async () => {
+      try {
+        const fresh = await http.get<ComicDetail>(`/api/comics/${id}`);
+        void cacheComicDetail(fresh);
+        return fresh;
+      } catch (err) {
+        // Only a dead network falls back. A 404 is the server saying this comic
+        // is gone, which is an answer, not an outage.
+        if (err instanceof HttpError) throw err;
+        const cached = await readComicDetail(id);
+        if (cached) return cached;
+        throw err;
+      }
+    },
     retry: (count, err) => !(err instanceof HttpError && err.status < 500) && count < 2,
     // The page list and the file behind it don't change while you read. Refetching
     // on tab focus would only ever re-race our own progress writes.
@@ -103,16 +124,26 @@ export function ReaderPage({ id }: { id: string }) {
   // --- progress -----------------------------------------------------------
 
   const saveProgress = useMutation({
-    mutationFn: (body: ProgressRequest) =>
-      http.put<Progress>(`/api/comics/${id}/progress`, { ...body }),
-    onSuccess: (progress) => {
+    mutationFn: (body: ProgressRequest) => putProgress(id, body),
+    onSuccess: (progress, body) => {
       // Patch the cache in place. Invalidating would refetch ComicDetail on every
       // page turn, and the arriving payload carries a `progress` a second or two
       // behind where the reader now is — the reader would spend the whole book
       // fighting its own writes.
-      queryClient.setQueryData<ComicDetail>(["comic", id], (prev) =>
-        prev ? { ...prev, progress } : prev,
-      );
+      queryClient.setQueryData<ComicDetail>(["comic", id], (prev) => {
+        if (!prev) return prev;
+        // A null answer means the write was queued for reconnect. Take our own
+        // claim for now: it is what the queue will replay, and the reader is
+        // looking at the page it describes.
+        const next: Progress = progress ?? {
+          comicId: id,
+          page: body.page,
+          pageCount: prev.pages.length,
+          completed: body.completed,
+          updatedAt: body.updatedAt ?? Math.floor(Date.now() / 1000),
+        };
+        return { ...prev, progress: next };
+      });
     },
   });
 
@@ -134,7 +165,15 @@ export function ReaderPage({ id }: { id: string }) {
         // The tab is being torn down; a normal fetch dies with it and the last
         // few pages of a session are exactly the ones worth keeping. keepalive
         // hands the request to the browser to finish without us.
-        http.put(`/api/comics/${id}/progress`, { ...body }, { keepalive: true }).catch(() => {});
+        http
+          .put(`/api/comics/${id}/progress`, { ...body }, { keepalive: true })
+          // Offline the request fails at once, while the tab is still alive
+          // enough to write to disk. Best-effort by nature — if the page is
+          // already gone the enqueue goes with it — but it costs nothing and
+          // rescues the common case of closing a comic on a train.
+          .catch(() => {
+            void enqueueProgress(id, body, body.updatedAt ?? Math.floor(Date.now() / 1000));
+          });
         return;
       }
       mutateRef.current(body);
@@ -175,7 +214,15 @@ export function ReaderPage({ id }: { id: string }) {
       // Reaching the last *spread* finishes the book — in two-page mode the final
       // turn can land on pageCount-2 and never touch the last index.
       const lastStart = spreads[spreads.length - 1]?.[0] ?? pageCount - 1;
-      queueProgress({ page: next, completed: next >= lastStart });
+      // Stamped here, where the page was turned, and not where the write goes
+      // out. The debounce alone puts a second between the two, and a queued
+      // write can sit for hours — the server orders claims by this, so it has
+      // to mean "when this was true".
+      queueProgress({
+        page: next,
+        completed: next >= lastStart,
+        updatedAt: Math.floor(Date.now() / 1000),
+      });
     },
     [pageCount, spreads, queueProgress],
   );
@@ -440,6 +487,7 @@ export function ReaderPage({ id }: { id: string }) {
         rtl={rtl}
         onRtl={setRtl}
         visible={chromeVisible}
+        download={<DownloadButton comicId={id} />}
       />
 
       <div

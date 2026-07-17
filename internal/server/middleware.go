@@ -84,6 +84,29 @@ func devAuthTLSEvidence(r *http.Request) string {
 	return ""
 }
 
+// sessionTokenCtxKey carries the caller's own session token, for the handlers
+// that must tell the caller's session apart from the same user's other ones.
+//
+// It is a second key rather than a wider value under userCtxKey because
+// userFrom's type assertion is how every handler reads the user: widening that
+// value would not break the build, it would quietly hand all of them a zero
+// user.
+type sessionTokenCtxKey struct{}
+
+// sessionTokenFrom returns the caller's session token, or "" if the request was
+// authenticated without one — which is the dev-auth bypass, since it resolves a
+// user with no session behind it.
+func sessionTokenFrom(ctx context.Context) string {
+	t, _ := ctx.Value(sessionTokenCtxKey{}).(string)
+	return t
+}
+
+// authed builds the context an authenticated handler runs with.
+func authed(r *http.Request, u userFromSession) context.Context {
+	ctx := context.WithValue(r.Context(), userCtxKey{}, u.user)
+	return context.WithValue(ctx, sessionTokenCtxKey{}, u.token)
+}
+
 // requireAuth gates a handler behind a valid session.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +115,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userCtxKey{}, u.user)))
+		next(w, r.WithContext(authed(r, u)))
 	}
 }
 
@@ -108,7 +131,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusForbidden, "admin only")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userCtxKey{}, u.user)))
+		next(w, r.WithContext(authed(r, u)))
 	}
 }
 

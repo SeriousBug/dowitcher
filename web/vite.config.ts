@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
@@ -9,7 +9,7 @@ export default defineConfig({
   // Absolute base so hashed assets load from /assets/* on deep links like
   // /comic/abc123 (a relative base would resolve to /comic/assets/* and 404).
   base: "/",
-  plugins: [react(), keepGitkeep()],
+  plugins: [react(), keepGitkeep(), assertCacheNames()],
   resolve: {
     alias: {
       "styled-system": fileURLToPath(new URL("./styled-system", import.meta.url)),
@@ -42,6 +42,41 @@ function keepGitkeep(): Plugin {
     name: "longbox-keep-gitkeep",
     closeBundle() {
       writeFileSync(fileURLToPath(new URL("./dist/.gitkeep", import.meta.url)), "");
+    },
+  };
+}
+
+/**
+ * Fails the build when public/sw.js and src/offline/cacheNames.ts disagree.
+ *
+ * The worker is served verbatim out of public/ so that no build step stands
+ * between it and the browser, which also means it cannot import the names it
+ * shares with the page. Drift there is silent and nasty — the page fills one
+ * cache and the worker reads another, so downloads simply never appear offline.
+ * Cheaper to catch it here than in a bug report from someone on a train.
+ */
+function assertCacheNames(): Plugin {
+  return {
+    name: "longbox-assert-cache-names",
+    buildStart() {
+      const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+      const contract = read("./src/offline/cacheNames.ts");
+      const worker = read("./public/sw.js");
+
+      for (const name of ["SHELL_CACHE", "PAGE_CACHE"]) {
+        const pattern = new RegExp(`const ${name} = "([^"]+)"`);
+        const expected = contract.match(new RegExp(`export ${pattern.source}`))?.[1];
+        const actual = worker.match(pattern)?.[1];
+        if (!expected || !actual) {
+          throw new Error(`assert-cache-names: could not read ${name} from both files`);
+        }
+        if (expected !== actual) {
+          throw new Error(
+            `assert-cache-names: ${name} is "${actual}" in public/sw.js but "${expected}" in ` +
+              `src/offline/cacheNames.ts — the worker and the page must agree.`,
+          );
+        }
+      }
     },
   };
 }

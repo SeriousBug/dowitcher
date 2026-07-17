@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/SeriousBug/longbox/internal/api"
@@ -135,8 +136,25 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // handleDeleteCredential removes one of the caller's own passkeys. Removing the
 // last one is allowed: an admin can always mint a recovery invite, and refusing
 // would strand a user who wants to retire a lost device.
+//
+// Retiring a lost device means nothing while that device still holds a live
+// session cookie, so the caller's other sessions go with the passkey — but not
+// the caller's own, because being logged out of the phone you are tidying up
+// from is not what anyone asked for.
+//
+// Revocation runs before the delete so that a failure between the two leaves
+// too little access rather than too much: the reverse order can end with the
+// passkey gone and the lost device still signed in, which is the one outcome
+// this handler exists to prevent. The cost is that a delete which then 404s has
+// already cut the other sessions; that is a nuisance for the honest caller and
+// the safe side of a decision the security of the flow rests on.
 func (s *Server) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
+	if err := s.store.DeleteUserSessionsExcept(u.ID, sessionTokenFrom(r.Context())); err != nil {
+		log.Printf("delete credential: revoke sessions for %s: %v", u.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	if err := s.store.DeleteCredential(u.ID, r.PathValue("id")); err != nil {
 		if isNotFound(err) {
 			writeErr(w, http.StatusNotFound, "passkey not found")
@@ -196,6 +214,17 @@ func (s *Server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 // handleResetUser mints a single-use recovery invite bound to an existing user.
 // Enrolling on the returned link adds a fresh passkey to that user, restoring
 // access without changing their identity or admin status.
+//
+// It also revokes every session the user has. This is the lost-device flow: an
+// admin reaches for it precisely when something that should not have access
+// still does, and a recovery link that leaves the lost device signed in for the
+// rest of the TTL answers the wrong half of the problem. All sessions go, not
+// all but the admin's, because the admin is not the user being reset.
+//
+// Revoking before minting means a revocation failure aborts with nothing done
+// and the admin can retry, and a mint failure after it costs only a re-issued
+// link — the user is logged out either way, which is the outcome that was
+// wanted.
 func (s *Server) handleResetUser(w http.ResponseWriter, r *http.Request) {
 	u, err := s.store.GetUser(r.PathValue("id"))
 	if err != nil {
@@ -203,6 +232,11 @@ func (s *Server) handleResetUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "user not found")
 			return
 		}
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if err := s.store.DeleteUserSessions(u.ID); err != nil {
+		log.Printf("reset user: revoke sessions for %s: %v", u.ID, err)
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}

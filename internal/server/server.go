@@ -123,6 +123,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.serveSPA)
 }
 
+// noCache is the caching rule for the files that decide which version of the app
+// a browser is running: the app shell and the service worker. They keep their
+// stable names across every build, so a cached copy is not a copy of an old file
+// but the whole old app, still being served after the deploy that replaced it.
+// no-cache still allows a conditional request, so the cost of getting this right
+// is a 304 per load rather than a download.
+const noCache = "no-cache"
+
 // serveSPA serves embedded static files, falling back to index.html for client
 // routes so deep links work.
 func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +140,7 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	if f, err := s.spa.Open(p); err == nil {
 		f.Close()
+		spaHeaders(w, p)
 		http.FileServer(http.FS(s.spa)).ServeHTTP(w, r)
 		return
 	}
@@ -140,8 +149,36 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "SPA not built", http.StatusInternalServerError)
 		return
 	}
+	// The deep-link fallback hands out the same shell as "/" and needs the same
+	// rule; this is the second of the two ways index.html leaves the server.
+	w.Header().Set("Cache-Control", noCache)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
+}
+
+// spaHeaders sets what http.FileServer cannot work out from the embedded FS: how
+// long a file may be cached, and the one content type Go's mime table is missing.
+func spaHeaders(w http.ResponseWriter, p string) {
+	switch {
+	case p == "sw.js":
+		// The service worker decides what every other request resolves to, so a
+		// stale one pins the fleet to the bundle it was built against. Browsers cap
+		// worker script freshness at 24h regardless, but a day of serving an old
+		// worker to everyone is a day of shipping nothing.
+		w.Header().Set("Cache-Control", noCache)
+	case p == "index.html":
+		w.Header().Set("Cache-Control", noCache)
+	case p == "manifest.webmanifest":
+		// Go's mime table does not know this extension, so FileServer sniffs and
+		// gets it wrong. Chrome ignores a manifest served as anything else, which
+		// costs the install prompt.
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case strings.HasPrefix(p, "assets/"):
+		// Vite content-addresses everything under assets/, so the name changes when
+		// the bytes do and the old name is never reused. Same reasoning as a comic
+		// page: cacheable for as long as the browser will hold it.
+		w.Header().Set("Cache-Control", immutableCache)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -201,9 +201,20 @@ export interface ReorderCollectionRequest {
 export interface SetTagsRequest {
   tags: string[];
 }
+/**
+ * ProgressRequest is a client's claim about where it left off.
+ * UpdatedAt is when the client observed the position, not when it managed to
+ * send it. An offline client queues writes and replays them on reconnect, so
+ * arrival order says nothing about reading order: without a client clock, a
+ * phone replaying an hour-old position would clobber the page you are on right
+ * now. The server compares it against the stored row and drops the older claim.
+ * Zero means the client is not making a claim and the server stamps its own
+ * clock, which keeps existing callers working.
+ */
 export interface ProgressRequest {
   page: number /* int */;
   completed: boolean;
+  updatedAt?: number /* int64 */;
 }
 /**
  * ImportStage names the phase of an import job. The UI shows these verbatim.

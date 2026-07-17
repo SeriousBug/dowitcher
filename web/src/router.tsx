@@ -3,8 +3,10 @@ import type { ComponentType } from "react";
 import { AppShell } from "./components/AppShell";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
+import { OfflineSync } from "./offline/OfflineSync";
 import { CollectionDetailPage } from "./routes/CollectionDetail";
 import { CollectionsPage } from "./routes/Collections";
+import { DownloadsPage } from "./routes/Downloads";
 import { Enroll } from "./routes/Enroll";
 import { ImportPage } from "./routes/Import";
 import { LibraryPage } from "./routes/Library";
@@ -43,6 +45,9 @@ function protectedFullscreen<P extends object>(Page: ComponentType<P>) {
 const rootRoute = createRootRoute({
   component: () => (
     <AuthProvider>
+      {/* Inside the provider: the progress queue replays against a session, and
+          draining it while signed out would spend it on 401s. */}
+      <OfflineSync />
       <Outlet />
     </AuthProvider>
   ),
@@ -86,6 +91,13 @@ const collectionRoute = createRoute({
     const { id } = collectionRoute.useParams();
     return <ProtectedCollectionDetail id={id} />;
   },
+});
+
+const ProtectedDownloads = protectedPage(DownloadsPage);
+const downloadsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/downloads",
+  component: ProtectedDownloads,
 });
 
 const ProtectedTags = protectedPage(TagsPage);
@@ -132,6 +144,7 @@ const routeTree = rootRoute.addChildren([
   comicRoute,
   collectionsRoute,
   collectionRoute,
+  downloadsRoute,
   tagsRoute,
   importRoute,
   settingsRoute,
