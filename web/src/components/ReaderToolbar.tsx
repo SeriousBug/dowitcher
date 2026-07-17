@@ -5,6 +5,7 @@ import {
   ArrowRightLeft,
   ArrowUpDown,
   BookOpen,
+  Keyboard,
   Maximize,
   X,
 } from "lucide-react";
@@ -49,6 +50,7 @@ export function ReaderToolbar({
   rtl,
   onRtl,
   visible,
+  onShortcuts,
   download,
 }: {
   title: string;
@@ -61,6 +63,7 @@ export function ReaderToolbar({
   rtl: boolean;
   onRtl: (on: boolean) => void;
   visible: boolean;
+  onShortcuts: () => void;
   /** Slot rather than a comic id: the toolbar has no business knowing what a
    *  download is, and the reader already holds the one it would ask about. */
   download?: ReactNode;
@@ -166,6 +169,15 @@ export function ReaderToolbar({
           className={cx(iconButton, rtl ? TOGGLE_STATE.on : TOGGLE_STATE.off)}
         >
           <ArrowRightLeft size={16} />
+        </button>
+
+        <button
+          onClick={onShortcuts}
+          aria-label="Shortcuts"
+          title="Shortcuts (?)"
+          className={cx(iconButton, TOGGLE_STATE.off)}
+        >
+          <Keyboard size={16} />
         </button>
       </div>
     </header>
