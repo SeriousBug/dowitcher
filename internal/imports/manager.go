@@ -338,32 +338,9 @@ func (m *Manager) file(job api.ImportJob, comicID, outPath string, opts api.Impo
 	hash := a.Hash()
 	a.Close()
 
-	now := time.Now().Unix()
-	row := store.ComicRow{
-		ID:          comicID,
-		Path:        filepath.Base(outPath),
-		ContentHash: hash,
-		Title:       c.Title,
-		Series:      c.Series,
-		Number:      c.Number,
-		Volume:      c.Volume,
-		Summary:     c.Summary,
-		PageCount:   res.PageCount,
-		FileSize:    res.OutBytes,
-		AddedAt:     now,
-		ModifiedAt:  now,
-		OwnerID:     job.OwnerID,
-		Source:      store.SourceUpload,
-	}
-	if err := m.store.UpsertComic(row); err != nil {
+	row := comicRow(comicID, job.OwnerID, outPath, c, hash, res.PageCount, res.OutBytes)
+	if err := m.fileComic(row, opts.CollectionID); err != nil {
 		return err
-	}
-	if opts.CollectionID != "" {
-		// A collection that vanished or was never theirs must not lose them the
-		// comic they just waited on: the import succeeded, the filing did not.
-		if err := m.store.AddToCollection(job.OwnerID, opts.CollectionID, comicID); err != nil {
-			log.Printf("import %s: add to collection %s: %v", job.ID, opts.CollectionID, err)
-		}
 	}
 	if err := m.writeReport(job.ID, res.Groups); err != nil {
 		log.Printf("import %s: write dupe report: %v", job.ID, err)
@@ -378,6 +355,44 @@ func (m *Manager) file(job api.ImportJob, comicID, outPath string, opts api.Impo
 		j.NearDupes = res.NearDupes
 		j.Done, j.Total = res.PageCount, res.PageCount
 	})
+	return nil
+}
+
+// comicRow builds the row for a CBZ sitting at its final path. c is the metadata
+// read from the archive; pageCount and size are passed rather than re-derived
+// because the pipeline already knows both and the adopter has to stat anyway.
+func comicRow(comicID, ownerID, outPath string, c api.Comic, hash string, pageCount int, size int64) store.ComicRow {
+	now := time.Now().Unix()
+	return store.ComicRow{
+		ID:          comicID,
+		Path:        filepath.Base(outPath),
+		ContentHash: hash,
+		Title:       c.Title,
+		Series:      c.Series,
+		Number:      c.Number,
+		Volume:      c.Volume,
+		Summary:     c.Summary,
+		PageCount:   pageCount,
+		FileSize:    size,
+		AddedAt:     now,
+		ModifiedAt:  now,
+		OwnerID:     ownerID,
+		Source:      store.SourceUpload,
+	}
+}
+
+// fileComic writes the row and files the comic into the requested collection.
+func (m *Manager) fileComic(row store.ComicRow, collectionID string) error {
+	if err := m.store.UpsertComic(row); err != nil {
+		return err
+	}
+	if collectionID != "" {
+		// A collection that vanished or was never theirs must not lose them the
+		// comic they just waited on: the import succeeded, the filing did not.
+		if err := m.store.AddToCollection(row.OwnerID, collectionID, row.ID); err != nil {
+			log.Printf("comic %s: add to collection %s: %v", row.ID, collectionID, err)
+		}
+	}
 	return nil
 }
 
