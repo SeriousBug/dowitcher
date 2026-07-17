@@ -25,5 +25,12 @@
       "styled-system/*": ["./styled-system/*"]
     }
   },
-  "include": ["src", "panda.config.ts", "vite.config.ts", "styled-system"]
+  "include": [
+    "src",
+    "e2e",
+    "panda.config.ts",
+    "vite.config.ts",
+    "playwright.config.ts",
+    "styled-system"
+  ]
 }
