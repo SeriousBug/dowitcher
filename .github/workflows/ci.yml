@@ -7,27 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  go:
+  # One job, because the Go tests need the built SPA: the server embeds
+  # web/dist via //go:embed, and the SPA fallback test asserts a real
+  # index.html comes back. A fresh clone only has the .gitkeep placeholder.
+  test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      # web/dist is gitignored except for .gitkeep, which is enough for
-      # //go:embed all:dist to compile. The SPA itself is not needed to test.
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
-
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v7
 
@@ -42,6 +26,18 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
       - run: pnpm install --frozen-lockfile
+        working-directory: web
       - run: pnpm typecheck
+        working-directory: web
       - run: pnpm build
+        working-directory: web
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
