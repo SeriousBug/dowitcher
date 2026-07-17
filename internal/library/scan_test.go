@@ -60,7 +60,7 @@ func TestScanReplacedInPlaceKeepsIDAndProgress(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 	before := comicAt(t, st, "Book 01.cbz")
-	if err := st.SetComicTags(u.ID, before.ID, []string{"keep-me"}); err != nil {
+	if err := st.SetComicTags(u.ID, false, before.ID, []string{"keep-me"}); err != nil {
 		t.Fatalf("set tags: %v", err)
 	}
 	if _, err := st.SetProgress(u.ID, before.ID, 1, false); err != nil {
@@ -110,7 +110,7 @@ func TestScanRenamePreservesTagsAndProgress(t *testing.T) {
 	}
 
 	before := comicAt(t, st, "Untitled Scan.cbz")
-	if err := st.SetComicTags(u.ID, before.ID, []string{"favourite", "sci-fi"}); err != nil {
+	if err := st.SetComicTags(u.ID, false, before.ID, []string{"favourite", "sci-fi"}); err != nil {
 		t.Fatalf("set tags: %v", err)
 	}
 	if _, err := st.SetProgress(u.ID, before.ID, 3, true); err != nil {
@@ -211,7 +211,7 @@ func TestScanFlagsMissingAndClearsOnReturn(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 	row := comicAt(t, st, "Gone 01.cbz")
-	if err := st.SetComicTags(u.ID, row.ID, []string{"unmounted"}); err != nil {
+	if err := st.SetComicTags(u.ID, false, row.ID, []string{"unmounted"}); err != nil {
 		t.Fatalf("set tags: %v", err)
 	}
 

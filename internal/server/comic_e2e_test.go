@@ -18,6 +18,7 @@ import (
 
 	"github.com/SeriousBug/longbox/internal/api"
 	"github.com/SeriousBug/longbox/internal/cbz"
+	"github.com/SeriousBug/longbox/internal/library"
 	"github.com/SeriousBug/longbox/internal/store"
 )
 
@@ -241,7 +242,10 @@ func TestCoverFallsBackToGenerating(t *testing.T) {
 	if _, err := png.Decode(bytes.NewReader(body)); err == nil {
 		t.Fatal("a cover should be the JPEG thumbnail, not the page itself")
 	}
-	cached := filepath.Join(cfg.CoverCacheDir, row.ContentHash+".jpg")
+	// Sharded, and via the same helper the scanner uses: the handler and the
+	// scanner share this directory, so a layout spelled out independently here
+	// is how the two drifted apart in the first place.
+	cached := library.CoverPathIn(cfg.CoverCacheDir, row.ContentHash)
 	if _, err := os.Stat(cached); err != nil {
 		t.Fatalf("a generated cover should be cached for the next reader: %v", err)
 	}

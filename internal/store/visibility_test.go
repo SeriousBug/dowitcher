@@ -107,7 +107,7 @@ func TestVisibilityCoversDerivedReads(t *testing.T) {
 	if err := st.UpsertComic(upload); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := st.SetComicTags(alice.ID, upload.ID, []string{"private-tag"}); err != nil {
+	if err := st.SetComicTags(alice.ID, false, upload.ID, []string{"private-tag"}); err != nil {
 		t.Fatalf("set tags: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestVisibilityCoversDerivedReads(t *testing.T) {
 
 	// Tagging and progress on an invisible comic are refused, not silently
 	// applied to a comic the caller cannot read back.
-	if err := st.SetComicTags(bob.ID, upload.ID, []string{"nope"}); !errors.Is(err, ErrNotFound) {
+	if err := st.SetComicTags(bob.ID, false, upload.ID, []string{"nope"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tagging an invisible comic should fail, got %v", err)
 	}
 	if _, err := st.SetProgress(bob.ID, upload.ID, 3, false); !errors.Is(err, ErrNotFound) {

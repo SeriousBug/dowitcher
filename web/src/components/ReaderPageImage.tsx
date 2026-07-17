@@ -39,7 +39,8 @@ const SKELETON_CLASS = css({
  * One page, sized before its bytes arrive. The width/height attributes give the
  * browser the aspect box up front so the page doesn't jump into place when it
  * decodes, and `aspect-ratio: auto W/H` means the real ratio silently takes over
- * once the image loads — which is what rescues the AVIF pages that report 0x0.
+ * once the image loads — which is what rescues a page whose dimensions the API
+ * didn't carry.
  */
 export function ReaderPageImage({
   comicId,
@@ -60,9 +61,11 @@ export function ReaderPageImage({
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // Some encoders (AVIF especially) leave the store with no dimensions. Guess
-  // comic trim rather than render a zero-height box: a wrong-but-plausible
-  // reservation costs a small settle, no reservation costs a full reflow.
+  // Dimensions are optional in the API. Every format we decode today reports
+  // them, AVIF included, so this path is a guard against a future format whose
+  // header we can't read rather than a case seen in practice. Guess comic trim
+  // rather than render a zero-height box: a wrong-but-plausible reservation
+  // costs a small settle, no reservation costs a full reflow.
   const known = Boolean(page?.width && page?.height);
   const width = known ? page!.width! : Math.round(1000 * TRIM_RATIO);
   const height = known ? page!.height! : 1000;

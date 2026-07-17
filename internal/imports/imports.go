@@ -31,11 +31,23 @@ import (
 )
 
 var (
-	ErrNoImages   = errors.New("no image files found")
-	ErrNotDir     = errors.New("not a directory")
-	ErrBadEncode  = errors.New("unsupported encode format")
-	ErrBadQuality = errors.New("quality out of range")
+	ErrNoImages     = errors.New("no image files found")
+	ErrNotDir       = errors.New("not a directory")
+	ErrBadEncode    = errors.New("unsupported encode format")
+	ErrBadQuality   = errors.New("quality out of range")
+	ErrTooManyFiles = errors.New("too many files in one import")
 )
+
+// maxFiles bounds one import. The grouping sweep is O(n^2) in the number of
+// distinct images and nothing else limits it: the 8GB upload cap allows ~200k
+// small files, which is ~2e10 MAE comparisons — hours of every core, with every
+// thumbnail resident, so memory gives out first. The pipeline has no way to
+// refuse that once it has started, so it is refused before it starts.
+//
+// 5000 is well past any real book: a long collected edition is under 1000
+// pages, and 5000 still leaves room for a folder carrying several chapters plus
+// their previews. At 5000 the sweep is ~1.2e7 pairs, which is seconds.
+const maxFiles = 5000
 
 // ProgressFunc reports stage progress. Total is 0 when it is not yet known or
 // does not apply. Implementations must be safe to call from any goroutine; the
@@ -97,6 +109,9 @@ func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, pr
 	}
 	if len(files) == 0 {
 		return nil, fmt.Errorf("%w in %s", ErrNoImages, srcDir)
+	}
+	if len(files) > maxFiles {
+		return nil, fmt.Errorf("%w: %d files, limit is %d", ErrTooManyFiles, len(files), maxFiles)
 	}
 
 	workers := runtime.NumCPU()

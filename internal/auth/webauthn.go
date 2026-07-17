@@ -36,9 +36,19 @@ type Manager struct {
 }
 
 type ceremony struct {
-	data         *webauthn.SessionData
-	userID       string
-	name         string
+	data   *webauthn.SessionData
+	userID string
+	name   string
+	// inviteToken is the invite this ceremony was begun against, and it is the
+	// only invite the matching finish will consume.
+	//
+	// It lives here rather than being handed to FinishRegistration by the caller
+	// because isAdmin below is read from the invite at begin time. If the finish
+	// could name a different invite, the rights a user is created with and the
+	// invite that pays for them would come from two different places, and
+	// nothing would check they agree. Keeping both on the ceremony means there
+	// is only ever one invite in play.
+	inviteToken  string
 	isAdmin      bool
 	existingUser bool // recovery invite: add a passkey to an existing user, don't create one
 	expires      time.Time
@@ -133,7 +143,7 @@ func (m *Manager) BeginRegistration(inviteToken, name string) (*protocol.Credent
 	// Recovery invite bound to an existing user: enroll an additional passkey
 	// onto that user rather than creating a new one.
 	if inv.ForUser != "" {
-		return m.beginRecoveryRegistration(inv.ForUser)
+		return m.beginRecoveryRegistration(inv.ForUser, inviteToken)
 	}
 	if name == "" {
 		name = "user"
@@ -144,14 +154,17 @@ func (m *Manager) BeginRegistration(inviteToken, name string) (*protocol.Credent
 	if err != nil {
 		return nil, "", false, err
 	}
-	cid := m.put(&ceremony{data: sessionData, userID: userID, name: name, isAdmin: inv.IsAdmin})
+	cid := m.put(&ceremony{
+		data: sessionData, userID: userID, name: name,
+		inviteToken: inviteToken, isAdmin: inv.IsAdmin,
+	})
 	return opts, cid, inv.IsAdmin, nil
 }
 
 // beginRecoveryRegistration starts enrollment of an additional passkey for an
 // existing user via a bound recovery invite. It reuses the user's WebAuthn id so
 // the new passkey lands on the same account.
-func (m *Manager) beginRecoveryRegistration(userID string) (*protocol.CredentialCreation, string, bool, error) {
+func (m *Manager) beginRecoveryRegistration(userID, inviteToken string) (*protocol.CredentialCreation, string, bool, error) {
 	u, err := m.st.GetUser(userID)
 	if err != nil {
 		return nil, "", false, ErrInvalidInvite
@@ -164,13 +177,21 @@ func (m *Manager) beginRecoveryRegistration(userID string) (*protocol.Credential
 	if err != nil {
 		return nil, "", false, err
 	}
-	cid := m.put(&ceremony{data: sessionData, userID: u.ID, name: u.Name, isAdmin: u.IsAdmin, existingUser: true})
+	cid := m.put(&ceremony{
+		data: sessionData, userID: u.ID, name: u.Name,
+		inviteToken: inviteToken, isAdmin: u.IsAdmin, existingUser: true,
+	})
 	return opts, cid, u.IsAdmin, nil
 }
 
 // FinishRegistration completes enrollment: verifies the attestation, creates the
 // user, stores the credential, and consumes the invite. Returns the new user id.
-func (m *Manager) FinishRegistration(ceremonyID, inviteToken string, r *http.Request) (string, error) {
+//
+// The invite is the ceremony's own, never one the caller names. The rights the
+// user is created with were read from that invite at begin time, so letting the
+// finish supply a different token would consume one invite and grant another's
+// rights, with nothing checking the two matched.
+func (m *Manager) FinishRegistration(ceremonyID string, r *http.Request) (string, error) {
 	cer, ok := m.take(ceremonyID)
 	if !ok {
 		return "", ErrCeremonyExpired
@@ -185,8 +206,10 @@ func (m *Manager) FinishRegistration(ceremonyID, inviteToken string, r *http.Req
 		return "", err
 	}
 	// Consume the invite before touching the user: the consume is the atomic
-	// single-use gate, so nothing may be created ahead of winning it.
-	if err := m.st.ConsumeInvite(inviteToken); err != nil {
+	// single-use gate, so nothing may be created ahead of winning it. The token
+	// is the ceremony's own, which is what ties the invite being spent to the
+	// invite cer.isAdmin was read from.
+	if err := m.st.ConsumeInvite(cer.inviteToken); err != nil {
 		return "", ErrInvalidInvite
 	}
 	if !cer.existingUser {

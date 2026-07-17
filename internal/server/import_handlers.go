@@ -46,6 +46,15 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.importer.Begin(u.ID)
 	if err != nil {
+		// The concurrency cap is the user's own doing and they can act on it, so
+		// it gets its own text rather than flattening to "db error" like a real
+		// internal failure. Refusing here, before a byte of a multi-GB upload has
+		// been read, is the whole reason the cap lives in Begin.
+		if errors.Is(err, imports.ErrTooManyImports) {
+			writeErr(w, http.StatusTooManyRequests,
+				"you already have an import running; wait for it to finish before starting another")
+			return
+		}
 		log.Printf("begin import: %v", err)
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return

@@ -280,61 +280,6 @@ func TestNonAdminIsRefusedAdminRoutes(t *testing.T) {
 	}
 }
 
-// TestDevAuthBypass: with the bypass on, an unauthenticated client is the named
-// admin user everywhere, with no ceremony and no cookie.
-func TestDevAuthBypass(t *testing.T) {
-	ts, st, _ := testServer(t, func(c *Config) { c.DevAuth = &auth.DevAuth{Name: "dev"} })
-
-	// No jar: nothing is carrying a session.
-	client := &http.Client{}
-	resp, body := getReq(t, client, ts.URL+"/auth/me")
-	if resp.StatusCode != 200 {
-		t.Fatalf("/auth/me with dev auth: %d %s", resp.StatusCode, body)
-	}
-	var me api.Session
-	if err := json.Unmarshal(body, &me); err != nil {
-		t.Fatalf("decode session: %v", err)
-	}
-	if me.User.Name != "dev" || !me.User.IsAdmin {
-		t.Fatalf("dev auth user = %+v, want admin named dev", me.User)
-	}
-	// Admin routes open too.
-	if resp, _ := getReq(t, client, ts.URL+"/api/users"); resp.StatusCode != 200 {
-		t.Fatalf("dev auth should reach admin routes, got %d", resp.StatusCode)
-	}
-	// The user is created once and reused, not re-created per request.
-	getReq(t, client, ts.URL+"/auth/me")
-	if n, err := st.CountUsers(); err != nil || n != 1 {
-		t.Fatalf("users = %d err=%v, want 1", n, err)
-	}
-}
-
-// TestDevAuthRefusesHTTPSOrigin: the bypass on a TLS origin means it reached
-// production, and the process must refuse rather than serve an open library.
-func TestDevAuthRefusesHTTPSOrigin(t *testing.T) {
-	t.Setenv(auth.DevAuthEnv, "dev")
-	if _, err := auth.DevAuthFromEnv("https://longbox.example.com"); err == nil {
-		t.Fatal("dev auth on an https origin must be refused")
-	}
-	if d, err := auth.DevAuthFromEnv("http://localhost:8080"); err != nil || d == nil {
-		t.Fatalf("dev auth on http should be allowed: d=%v err=%v", d, err)
-	}
-}
-
-// TestDevAuthOffByDefault: nothing but the env var turns it on.
-func TestDevAuthOffByDefault(t *testing.T) {
-	t.Setenv(auth.DevAuthEnv, "")
-	d, err := auth.DevAuthFromEnv("http://localhost:8080")
-	if err != nil || d != nil {
-		t.Fatalf("dev auth should be off without the env var: d=%v err=%v", d, err)
-	}
-
-	ts, _, _ := testServer(t, nil)
-	if resp, _ := getReq(t, &http.Client{}, ts.URL+"/auth/me"); resp.StatusCode != 401 {
-		t.Fatalf("/auth/me without a session should be 401, got %d", resp.StatusCode)
-	}
-}
-
 func TestHealthzAndSPAFallback(t *testing.T) {
 	ts, _, client := testServer(t, nil)
 	if resp, body := getReq(t, client, ts.URL+"/healthz"); resp.StatusCode != 200 || !strings.Contains(string(body), "ok") {
