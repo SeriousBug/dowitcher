@@ -597,7 +597,11 @@ function JobRow({ job }: { job: ImportJob }) {
               className={css({ color: "accent", flexShrink: 0, animation: "spin 0.9s linear infinite" })}
             />
           )}
-          <span className={css({ fontWeight: "semibold", truncate: true })}>{job.name}</span>
+          {/* A job exists before the server has read the options part, so one
+              that dies during the upload never gets a name at all. */}
+          <span className={css({ fontWeight: "semibold", truncate: true })}>
+            {job.name || "Untitled import"}
+          </span>
         </div>
 
         <div className={hstack({ gap: "3", flexShrink: 0 })}>
@@ -640,9 +644,23 @@ function JobRow({ job }: { job: ImportJob }) {
             {job.done} of {job.total}
           </span>
         )}
-        {job.pageCount > 0 && <span>{job.pageCount} pages kept</span>}
-        {job.exactDupes > 0 && <span>{job.exactDupes} exact duplicates dropped</span>}
-        {job.nearDupes > 0 && <span>{job.nearDupes} near-duplicates dropped</span>}
+        {job.pageCount > 0 && (
+          <span>{job.pageCount === 1 ? "1 page kept" : `${job.pageCount} pages kept`}</span>
+        )}
+        {job.exactDupes > 0 && (
+          <span>
+            {job.exactDupes === 1
+              ? "1 exact duplicate dropped"
+              : `${job.exactDupes} exact duplicates dropped`}
+          </span>
+        )}
+        {job.nearDupes > 0 && (
+          <span>
+            {job.nearDupes === 1
+              ? "1 near-duplicate dropped"
+              : `${job.nearDupes} near-duplicates dropped`}
+          </span>
+        )}
         {job.message && (
           <span className={css({ color: failed ? "rust.300" : "textMuted" })}>{job.message}</span>
         )}

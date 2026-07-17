@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Combobox, Dialog, Portal, useListCollection } from "@ark-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Tag as TagIcon, X } from "lucide-react";
@@ -152,6 +152,12 @@ export function TagPicker({
   onChange: (tags: string[]) => void;
   loading?: boolean;
 }) {
+  const [input, setInput] = useState("");
+  // Which item the keyboard is sitting on, so Enter can tell "pick this one"
+  // apart from "coin a new tag". allowCustomValue lets the input hold a value
+  // the list doesn't have; it does not, on its own, commit it to a selection.
+  const highlighted = useRef<string | null>(null);
+
   const { collection, filter, set } = useListCollection<string>({
     initialItems: all,
     filter: (itemText, filterText) => itemText.toLowerCase().includes(filterText.toLowerCase()),
@@ -161,6 +167,12 @@ export function TagPicker({
   // initialItems once.
   useEffect(() => set(all), [all, set]);
 
+  function add(tag: string) {
+    const clean = tag.trim();
+    if (!clean || selected.includes(clean)) return;
+    onChange([...selected, clean]);
+  }
+
   return (
     <div className={vstack({ gap: "3", alignItems: "stretch" })}>
       <Combobox.Root
@@ -169,8 +181,19 @@ export function TagPicker({
         allowCustomValue
         closeOnSelect={false}
         value={selected}
-        onValueChange={(d) => onChange(d.value)}
-        onInputValueChange={(d) => filter(d.inputValue)}
+        inputValue={input}
+        onValueChange={(d) => {
+          onChange(d.value);
+          // Clearing the box after each pick is what makes a run of tags feel
+          // like typing a list rather than editing one field over and over.
+          setInput("");
+          filter("");
+        }}
+        onHighlightChange={(d) => (highlighted.current = d.highlightedValue)}
+        onInputValueChange={(d) => {
+          setInput(d.inputValue);
+          filter(d.inputValue);
+        }}
         className={vstack({ gap: "2", alignItems: "stretch" })}
       >
         <Combobox.Label className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>
@@ -191,6 +214,15 @@ export function TagPicker({
           <TagIcon size={15} className={css({ color: "ink.500", flexShrink: 0 })} />
           <Combobox.Input
             placeholder={loading ? "Loading tags…" : "Type to search or invent one"}
+            onKeyDown={(e) => {
+              // With an item highlighted, Enter belongs to the list. With none,
+              // it means the tag they just typed doesn't exist yet.
+              if (e.key !== "Enter" || highlighted.current || !input.trim()) return;
+              e.preventDefault();
+              add(input);
+              setInput("");
+              filter("");
+            }}
             className={css({
               flex: "1",
               minW: "0",

@@ -83,6 +83,15 @@ func main() {
 
 	uploadsDir := filepath.Join(dataDir, "uploads")
 	coverCacheDir := filepath.Join(dataDir, "covers")
+	importTempDir := filepath.Join(dataDir, "tmp")
+
+	// Create the staging dir up front rather than lazily on first use: the only
+	// thing that would otherwise create it is an upload, so a fresh install's
+	// first import fails and every later one succeeds. Failing here instead
+	// surfaces a bad data volume at boot, where it is diagnosable.
+	if err := os.MkdirAll(importTempDir, 0o755); err != nil {
+		log.Fatalf("create import staging dir: %v", err)
+	}
 
 	srv := server.New(st, authMgr, server.Config{
 		RPID:    rpID,
@@ -96,7 +105,7 @@ func main() {
 		// Imports stage a whole folder of images before packing, which routinely
 		// runs to gigabytes. Keeping the staging area under the data volume
 		// rather than the OS temp dir avoids filling a small tmpfs mid-import.
-		ImportTempDir: filepath.Join(dataDir, "tmp"),
+		ImportTempDir: importTempDir,
 	})
 	log.Printf("library root %s, data dir %s", libraryRoot, dataDir)
 

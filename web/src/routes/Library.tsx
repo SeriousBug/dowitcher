@@ -12,7 +12,7 @@ import { TagEditorDialog } from "../components/TagEditorDialog";
 import { useLiveData } from "../live/LiveData";
 import { wsClient } from "../api/ws";
 import { HttpError } from "../api/http";
-import { COMICS_PAGE_SIZE, fetchComics } from "../api/comics";
+import { fetchComics } from "../api/comics";
 import { comicLabel } from "../lib/format";
 import type { Comic, Progress } from "../api/generated";
 
@@ -83,9 +83,7 @@ export function LibraryPage() {
     initialPageParam: 0,
     getNextPageParam: (last, all) => {
       const loaded = all.reduce((n, p) => n + p.comics.length, 0);
-      if (last.total !== null) return loaded < last.total ? loaded : undefined;
-      // No total from the server: a short page is the end of the shelf.
-      return last.comics.length < COMICS_PAGE_SIZE ? undefined : loaded;
+      return loaded < last.total ? loaded : undefined;
     },
   });
 
