@@ -7,3 +7,8 @@ web/styled-system/
 *.db
 *.db-shm
 *.db-wal
+
+# `just run` writes both: the dev library root, and the dev data volume
+# (SQLite, cover cache, uploads, import staging).
+/library-dev/
+/data-dev/
