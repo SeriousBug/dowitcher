@@ -122,6 +122,29 @@ var migrations = []string{
 		started_at INTEGER NOT NULL,
 		finished_at INTEGER NOT NULL DEFAULT 0
 	);`,
+	// Tags become per-user. The old tables were server-global — one `tags.name`
+	// row shared by everyone — so there is no owner to migrate an existing row
+	// to: a tag on a library comic could have been written by any user, and
+	// attributing it to a guessed account would hand one person a vocabulary
+	// they never wrote. The tables are dropped and everyone starts clean.
+	`DROP TABLE comic_tags;`,
+	`DROP TABLE tags;`,
+	// name is unique per user rather than globally, so two users coining the
+	// same word get two rows and neither can see the other's.
+	`CREATE TABLE tags (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		UNIQUE (user_id, name)
+	);`,
+	// tag_id already names the owner via tags.user_id, so the join carries no
+	// user column of its own.
+	`CREATE TABLE comic_tags (
+		comic_id TEXT NOT NULL REFERENCES comics(id) ON DELETE CASCADE,
+		tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+		PRIMARY KEY (comic_id, tag_id)
+	);`,
+	`CREATE INDEX idx_comic_tags_tag ON comic_tags(tag_id);`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is
