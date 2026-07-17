@@ -1,4 +1,4 @@
-import { PAGE_CACHE, STORE_COMICS, STORE_DOWNLOADS, STORE_PROGRESS_QUEUE, coverURL, pageURL } from "./cacheNames";
+import { PAGE_CACHE, STORE_COMICS, STORE_DOWNLOADS, STORE_PROGRESS_QUEUE, STORE_SESSION, coverURL, pageURL } from "./cacheNames";
 import { idbClear, idbDelete, idbGetAll, idbPut, idbTry } from "./db";
 import { cacheComicDetail, forgetComicDetail } from "./metaCache";
 import { requestPersistentStorage } from "./persist";
@@ -261,6 +261,7 @@ export async function clearOfflineData(): Promise<void> {
   await idbTry(idbClear(STORE_DOWNLOADS), undefined);
   await idbTry(idbClear(STORE_COMICS), undefined);
   await idbTry(idbClear(STORE_PROGRESS_QUEUE), undefined);
+  await idbTry(idbClear(STORE_SESSION), undefined);
 }
 
 /**
