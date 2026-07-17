@@ -336,6 +336,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             bottom: "0",
             zIndex: "20",
             py: "2",
+            // The first and last tabs otherwise sit under the rounded corners of
+            // an iOS home-screen install.
+            pl: "calc(token(spacing.3) + env(safe-area-inset-left))",
+            pr: "calc(token(spacing.3) + env(safe-area-inset-right))",
             bg: "rgba(19, 16, 17, 0.92)",
             backdropFilter: "blur(10px)",
             borderTopWidth: "1px",
