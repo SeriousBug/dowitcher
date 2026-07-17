@@ -211,7 +211,7 @@ export function SettingsPage() {
             {library?.root ?? "…"}
           </code>
           <p className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.6" })}>
-            Longbox watches this folder and picks up CBZ files as they appear.{" "}
+            Dowitcher watches this folder and picks up CBZ files as they appear.{" "}
             {library
               ? `${library.comicCount} found${library.lastScan ? `, last checked ${formatRelative(library.lastScan)}` : ""}.`
               : ""}
@@ -283,7 +283,7 @@ export function SettingsPage() {
           ) : invites.length === 0 ? (
             <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
               No invites waiting. Create one and send the link to whoever you want
-              on this Longbox — they set up their own passkey, and the link works
+              on this Dowitcher — they set up their own passkey, and the link works
               once.
             </p>
           ) : (
@@ -385,7 +385,7 @@ export function SettingsPage() {
         description={
           <>
             <strong>{confirmRemove?.name}</strong> won't be able to sign in to
-            Longbox any more. Your other passkeys keep working.
+            Dowitcher any more. Your other passkeys keep working.
           </>
         }
         confirmLabel="Remove"
@@ -402,7 +402,7 @@ export function SettingsPage() {
         description={
           <>
             <strong>{confirmDeleteUser?.name}</strong> loses access to this
-            Longbox, along with their passkeys, reading progress and anything they
+            Dowitcher, along with their passkeys, reading progress and anything they
             uploaded. This can't be undone.
           </>
         }

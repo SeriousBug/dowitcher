@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // SessionTTL is how long a session cookie stays valid. It is long because the
@@ -17,7 +17,7 @@ import (
 const SessionTTL = 365 * 24 * time.Hour
 
 // SessionCookieName is the HttpOnly session cookie.
-const SessionCookieName = "longbox_session"
+const SessionCookieName = "dowitcher_session"
 
 // randToken returns a URL-safe random token with n bytes of entropy. Session
 // tokens are opaque random bytes rather than signed claims: revoking a session

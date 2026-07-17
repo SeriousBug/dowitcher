@@ -1,7 +1,7 @@
 import { defineConfig } from "@pandacss/dev";
 
 /**
- * Longbox is dark-first on purpose: people read comics at night, and every
+ * Dowitcher is dark-first on purpose: people read comics at night, and every
  * screen here frames artwork. The neutrals are warm — a red-brown cast rather
  * than the usual blue-grey — so they read as cardboard and backing board in a
  * dim room instead of as a server dashboard, and so a page of yellowed newsprint

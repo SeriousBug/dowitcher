@@ -5,8 +5,8 @@ package auth
 import (
 	"errors"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // This is the default build's dev-auth: nothing at all.
@@ -18,7 +18,7 @@ import (
 // mistake is the config itself. A build tag cannot fail open: the code is not in
 // the binary, so no env var, header or origin can reach it. Release builds
 // (`go build ./...`, and the Dockerfile) never pass the tag, so a shipped
-// longbox physically cannot resolve an unauthenticated request to a user.
+// dowitcher physically cannot resolve an unauthenticated request to a user.
 //
 // The type and its methods survive here only so the packages that hold a
 // *DevAuth still compile. DevAuthFromEnv always returns nil, so nothing ever

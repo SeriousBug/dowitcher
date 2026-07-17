@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {

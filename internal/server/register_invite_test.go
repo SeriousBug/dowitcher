@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/descope/virtualwebauthn"
 )
 
@@ -47,7 +47,7 @@ func TestRegisterConsumesTheCeremonysOwnInvite(t *testing.T) {
 	// will spend this one.
 	u, _ := url.Parse(ts.URL)
 	client.Jar.SetCookies(u, []*http.Cookie{{
-		Name: "longbox_invite", Value: normalToken, Path: "/auth",
+		Name: "dowitcher_invite", Value: normalToken, Path: "/auth",
 	}})
 
 	pk := newPasskey(ts.URL)

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/cbz"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // Scan walks the library root and reconciles every file it finds against the
@@ -100,7 +100,7 @@ func (l *Library) finish() {
 
 // markMissing flags every library row whose file the walk did not find.
 //
-// Rows are never deleted here. An unmounted volume, a typo'd LONGBOX_LIBRARY or
+// Rows are never deleted here. An unmounted volume, a typo'd DOWITCHER_LIBRARY or
 // a container started before its NFS mount is ready all look exactly like "the
 // library is empty", and deleting on that reading would destroy every tag and
 // every reading position on the server. The flag is cleared the moment the file

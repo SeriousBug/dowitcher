@@ -1,4 +1,4 @@
-// Longbox service worker: makes the app shell launchable offline and serves
+// Dowitcher service worker: makes the app shell launchable offline and serves
 // downloaded comic pages back out of the cache the download manager filled.
 //
 // Plain JS in public/ rather than a bundled entry: Vite copies this file through
@@ -7,8 +7,8 @@
 // cost is that it cannot import src/offline/cacheNames.ts, so the two cache
 // names are repeated below — the `assertCacheNames` plugin in vite.config.ts
 // fails the build if they ever drift from the contract.
-const SHELL_CACHE = "longbox-shell-v1";
-const PAGE_CACHE = "longbox-pages-v1";
+const SHELL_CACHE = "dowitcher-shell-v1";
+const PAGE_CACHE = "dowitcher-pages-v1";
 
 const KEEP = [SHELL_CACHE, PAGE_CACHE];
 
@@ -94,7 +94,7 @@ async function shellNetworkFirst(req) {
   } catch {
     const cached = await caches.match(SHELL_URL, { cacheName: SHELL_CACHE });
     if (cached) return cached;
-    return new Response("Longbox is offline and no cached copy is available.", {
+    return new Response("Dowitcher is offline and no cached copy is available.", {
       status: 503,
       headers: { "Content-Type": "text/plain" },
     });

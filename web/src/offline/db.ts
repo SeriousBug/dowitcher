@@ -50,7 +50,7 @@ export function openDB(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error ?? new Error("Couldn't open the offline database."));
     // Another tab holds an older version open. Nothing to do but let that tab
     // win; retrying here would block this one forever.
-    req.onblocked = () => reject(new Error("Another Longbox tab is upgrading the offline database."));
+    req.onblocked = () => reject(new Error("Another Dowitcher tab is upgrading the offline database."));
   });
   // A failed open must not be memoised, or the first failure is permanent for
   // the life of the tab.

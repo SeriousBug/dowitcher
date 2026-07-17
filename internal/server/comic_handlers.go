@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/cbz"
-	"github.com/SeriousBug/longbox/internal/library"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/library"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 const (

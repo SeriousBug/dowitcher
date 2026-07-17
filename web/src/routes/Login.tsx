@@ -55,7 +55,7 @@ export function Login() {
             letterSpacing: "-0.03em",
           })}
         >
-          Longbox
+          Dowitcher
         </h1>
         <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
           Your comics, on your own shelf. Sign in with your passkey — there's no

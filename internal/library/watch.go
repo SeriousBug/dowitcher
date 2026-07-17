@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/fsnotify/fsnotify"
 )
 

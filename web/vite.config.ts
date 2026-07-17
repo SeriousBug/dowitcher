@@ -39,7 +39,7 @@ export default defineConfig({
  */
 function keepGitkeep(): Plugin {
   return {
-    name: "longbox-keep-gitkeep",
+    name: "dowitcher-keep-gitkeep",
     closeBundle() {
       writeFileSync(fileURLToPath(new URL("./dist/.gitkeep", import.meta.url)), "");
     },
@@ -57,7 +57,7 @@ function keepGitkeep(): Plugin {
  */
 function assertCacheNames(): Plugin {
   return {
-    name: "longbox-assert-cache-names",
+    name: "dowitcher-assert-cache-names",
     buildStart() {
       const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
       const contract = read("./src/offline/cacheNames.ts");

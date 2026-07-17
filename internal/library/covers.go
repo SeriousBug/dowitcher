@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/SeriousBug/longbox/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/cbz"
 )
 
 // CoverPathIn is where a comic's cached cover lives under coversDir. It returns

@@ -111,7 +111,7 @@ export function ImportPage() {
       toaster.create({
         type: "error",
         title: "No images in there",
-        description: "Longbox packs images into a CBZ, and that folder didn't have any.",
+        description: "Dowitcher packs images into a CBZ, and that folder didn't have any.",
       });
     }
   }
@@ -148,7 +148,7 @@ export function ImportPage() {
       toaster.create({
         type: "success",
         title: "Upload finished",
-        description: "Longbox is packing it now — watch it below.",
+        description: "Dowitcher is packing it now — watch it below.",
       });
       setFiles([]);
       setOptions((o) => ({ ...o, name: "" }));
@@ -182,7 +182,7 @@ export function ImportPage() {
       <PageHeader
         eyebrow="Intake"
         title="Import"
-        subtitle="Point Longbox at a folder of images. It drops the duplicates, puts the pages in order, and packs a CBZ."
+        subtitle="Point Dowitcher at a folder of images. It drops the duplicates, puts the pages in order, and packs a CBZ."
       />
 
       <section

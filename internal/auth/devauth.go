@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // Boot-time refusals. Each names a condition under which the bypass could only
@@ -18,7 +18,7 @@ import (
 var (
 	ErrDevAuthOnHTTPS = errors.New(DevAuthEnv + " is set but the origin is https:// — " +
 		"this bypasses all authentication and must never run on a public deployment")
-	ErrDevAuthNotLoopback = errors.New(DevAuthEnv + " is set but LONGBOX_ADDR does not bind loopback — " +
+	ErrDevAuthNotLoopback = errors.New(DevAuthEnv + " is set but DOWITCHER_ADDR does not bind loopback — " +
 		"this bypasses all authentication and must never listen on a routable address")
 )
 
@@ -32,9 +32,9 @@ var (
 //   - This file carries a `dev` build tag, so a release binary does not contain
 //     the hole at all. That is the only guard that cannot be defeated by
 //     configuration, which is why it is the one to rely on. See devauth_stub.go.
-//   - DevAuthFromEnv refuses to boot unless LONGBOX_ADDR binds loopback. The
+//   - DevAuthFromEnv refuses to boot unless DOWITCHER_ADDR binds loopback. The
 //     origin check that used to stand alone here was worthless: origin defaults
-//     to http://localhost:8080, so a TLS proxy in front with LONGBOX_ORIGIN
+//     to http://localhost:8080, so a TLS proxy in front with DOWITCHER_ORIGIN
 //     unset sailed straight past it. Normally a wrong origin self-enforces —
 //     WebAuthn breaks and the Secure cookie is dropped — but dev-auth needs
 //     neither, so the check had no teeth in exactly the case that mattered.

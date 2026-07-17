@@ -318,7 +318,7 @@ export function LibraryPage() {
               {library?.root ?? "your library folder"}
             </code>{" "}
             and they'll show up here on their own. Or bring in a folder of images
-            and Longbox will package it for you.
+            and Dowitcher will package it for you.
           </EmptyState>
         )
       ) : (

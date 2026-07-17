@@ -10,10 +10,10 @@
 // cache, which the worker deletes on activate. Bump SHELL_CACHE freely — it
 // only costs a re-download of the bundle. Bumping PAGE_CACHE throws away
 // comics the user deliberately downloaded, so it needs a real reason.
-export const SHELL_CACHE = "longbox-shell-v1";
-export const PAGE_CACHE = "longbox-pages-v1";
+export const SHELL_CACHE = "dowitcher-shell-v1";
+export const PAGE_CACHE = "dowitcher-pages-v1";
 
-export const DB_NAME = "longbox-offline";
+export const DB_NAME = "dowitcher-offline";
 export const DB_VERSION = 1;
 
 // Object stores in DB_NAME.

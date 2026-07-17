@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // drain reads everything queued on a client without blocking.

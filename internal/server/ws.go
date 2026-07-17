@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/coder/websocket"
 )
 

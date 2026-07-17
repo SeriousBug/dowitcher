@@ -1,4 +1,4 @@
-// Command longbox is a self-hosted comic reader with passkey-only auth.
+// Command dowitcher is a self-hosted comic reader with passkey-only auth.
 package main
 
 import (
@@ -13,34 +13,34 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
-	"github.com/SeriousBug/longbox/internal/imports"
-	"github.com/SeriousBug/longbox/internal/library"
-	"github.com/SeriousBug/longbox/internal/server"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/imports"
+	"github.com/SeriousBug/dowitcher/internal/library"
+	"github.com/SeriousBug/dowitcher/internal/server"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("longbox ")
+	log.SetPrefix("dowitcher ")
 
-	dbPath := env("LONGBOX_DB", "/data/longbox.db")
-	addr := env("LONGBOX_ADDR", ":8080")
-	origin := env("LONGBOX_ORIGIN", "http://localhost:8080")
-	rpID := env("LONGBOX_RP_ID", "localhost")
-	libraryRoot := env("LONGBOX_LIBRARY", "/library")
-	dataDir := env("LONGBOX_DATA", "/data")
+	dbPath := env("DOWITCHER_DB", "/data/dowitcher.db")
+	addr := env("DOWITCHER_ADDR", ":8080")
+	origin := env("DOWITCHER_ORIGIN", "http://localhost:8080")
+	rpID := env("DOWITCHER_RP_ID", "localhost")
+	libraryRoot := env("DOWITCHER_LIBRARY", "/library")
+	dataDir := env("DOWITCHER_DATA", "/data")
 
 	// A rescan of an unchanged library costs microseconds — the content hash
 	// reads the zip's central directory, not its contents — so the sweep is
 	// cheap enough to run often. It exists to catch what fsnotify misses: a
 	// dropped event, an NFS mount, a change made while the process was down.
 	sweepInterval := 15 * time.Minute
-	if v := os.Getenv("LONGBOX_SWEEP_INTERVAL"); v != "" {
+	if v := os.Getenv("DOWITCHER_SWEEP_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			log.Fatalf("LONGBOX_SWEEP_INTERVAL: %v", err)
+			log.Fatalf("DOWITCHER_SWEEP_INTERVAL: %v", err)
 		}
 		sweepInterval = d
 	}
@@ -64,7 +64,7 @@ func main() {
 	}
 	defer st.Close()
 
-	// Recovery: `longbox invite [--normal]` mints a fresh enrollment link from
+	// Recovery: `dowitcher invite [--normal]` mints a fresh enrollment link from
 	// the host and exits. This is the account-recovery path if every passkey is
 	// lost — host access already equals full control over the database.
 	if len(os.Args) > 1 && os.Args[1] == "invite" {

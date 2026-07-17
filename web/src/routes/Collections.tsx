@@ -421,7 +421,7 @@ function CreateCollectionDialog({
                   Share it with everyone here
                 </span>
                 <span className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.5" })}>
-                  Anyone with an account on this Longbox will be able to read what
+                  Anyone with an account on this Dowitcher will be able to read what
                   you put in it. They can't change it, and you can turn this off
                   whenever you like.
                 </span>

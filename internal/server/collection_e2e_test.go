@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 func createCollection(t *testing.T, ts *httptest.Server, client *http.Client, req api.CreateCollectionRequest) api.Collection {

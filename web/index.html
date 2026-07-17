@@ -14,7 +14,7 @@
          tag that used to live beside it is gone: since Safari 26 every Home
          Screen addition opens as a web app without it. -->
     <link rel="apple-touch-icon" href="/icon-192.png" />
-    <title>Longbox</title>
+    <title>Dowitcher</title>
     <script>
       // Chrome decides the app is installable and fires this well before the
       // bundle has parsed, and the event is only offered once — a listener added
@@ -24,8 +24,8 @@
       // the app can ask in its own words instead.
       window.addEventListener("beforeinstallprompt", function (e) {
         e.preventDefault();
-        window.__longboxInstallPrompt = e;
-        window.dispatchEvent(new Event("longbox:installable"));
+        window.__dowitcherInstallPrompt = e;
+        window.dispatchEvent(new Event("dowitcher:installable"));
       });
     </script>
   </head>

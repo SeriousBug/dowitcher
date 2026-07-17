@@ -1,4 +1,4 @@
-module github.com/SeriousBug/longbox
+module github.com/SeriousBug/dowitcher
 
 go 1.26.4
 

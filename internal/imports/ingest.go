@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // content is everything learned about one distinct SHA-256 digest.

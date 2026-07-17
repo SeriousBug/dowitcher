@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/imports"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/imports"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // importServer is a library server with the real import manager attached, which

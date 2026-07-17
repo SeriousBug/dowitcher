@@ -1,5 +1,5 @@
 packages:
-  - path: github.com/SeriousBug/longbox/internal/api
+  - path: github.com/SeriousBug/dowitcher/internal/api
     output_path: web/src/api/generated.ts
     type_mappings:
       int64: number

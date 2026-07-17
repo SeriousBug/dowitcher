@@ -92,7 +92,7 @@ async function walk(entry: FileSystemEntry, out: File[]): Promise<void> {
     if (file && isImage(file)) {
       // webkitRelativePath is read-only and empty on a dropped file, so the
       // entry's full path is stashed where the uploader can find it.
-      Object.defineProperty(file, "longboxPath", { value: entry.fullPath.replace(/^\//, "") });
+      Object.defineProperty(file, "dowitcherPath", { value: entry.fullPath.replace(/^\//, "") });
       out.push(file);
     }
     return;
@@ -109,6 +109,6 @@ async function walk(entry: FileSystemEntry, out: File[]): Promise<void> {
 
 /** The path the server should see: folder-relative where we know it, else the name. */
 export function pathOf(file: File): string {
-  const stashed = (file as File & { longboxPath?: string }).longboxPath;
+  const stashed = (file as File & { dowitcherPath?: string }).dowitcherPath;
   return stashed || file.webkitRelativePath || file.name;
 }

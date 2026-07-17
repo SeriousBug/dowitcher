@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 type userFromSession struct {
@@ -62,7 +62,7 @@ func (s *Server) currentUser(r *http.Request) (u userFromSession, ok bool) {
 //
 // This is the dev-auth guard that has teeth. The boot-time checks ask the
 // operator's configuration whether the operator made a mistake, which is
-// circular: LONGBOX_ORIGIN defaults to http://localhost:8080, so a TLS proxy in
+// circular: DOWITCHER_ORIGIN defaults to http://localhost:8080, so a TLS proxy in
 // front of an instance whose origin was never set looks exactly like a laptop.
 // A request cannot lie in the same direction — a developer's own curl to
 // localhost carries none of these, while anything that came through a real
@@ -162,7 +162,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-const ceremonyCookieName = "longbox_ceremony"
+const ceremonyCookieName = "dowitcher_ceremony"
 
 // setCeremonyCookie parks the in-flight ceremony id. Path is /auth so it is not
 // attached to any other request: it is only ever read by the matching finish

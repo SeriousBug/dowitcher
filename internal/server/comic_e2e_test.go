@@ -16,10 +16,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/cbz"
-	"github.com/SeriousBug/longbox/internal/library"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/library"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // libraryServer is testServer with the on-disk roots the comic handlers need to

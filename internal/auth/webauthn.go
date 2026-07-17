@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -56,8 +56,8 @@ type ceremony struct {
 
 // Config for the relying party.
 type Config struct {
-	RPID   string // e.g. "longbox.example.com"
-	Origin string // e.g. "https://longbox.example.com"
+	RPID   string // e.g. "dowitcher.example.com"
+	Origin string // e.g. "https://dowitcher.example.com"
 	RPName string
 }
 
@@ -65,7 +65,7 @@ type Config struct {
 func NewManager(st *store.Store, cfg Config) (*Manager, error) {
 	name := cfg.RPName
 	if name == "" {
-		name = "Longbox"
+		name = "Dowitcher"
 	}
 	wa, err := webauthn.New(&webauthn.Config{
 		RPID:          cfg.RPID,

@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 const (

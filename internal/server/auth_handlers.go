@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
 )
 
 func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
