@@ -1,3 +1,4 @@
+import { noteOutage, noteReachable } from "../lib/outage";
 import type { APIError } from "./generated";
 
 export class HttpError extends Error {
@@ -44,6 +45,13 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     ...rest,
   });
+
+  // Judged here rather than at the fallbacks, because reaching a fallback is not
+  // the same as noticing: an outage that only ever hits a mutation still means
+  // the server is down, and a success anywhere is enough to clear the notice.
+  // A rejected fetch() never gets here, which is deliberate — see lib/outage.
+  if (res.status >= 500) noteOutage();
+  else noteReachable();
 
   if (!res.ok) {
     let message = res.statusText;
