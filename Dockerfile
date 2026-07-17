@@ -25,8 +25,17 @@ COPY . .
 RUN rm -rf web/dist
 COPY --from=web /app/web/dist ./web/dist
 # Everything is pure Go, so cross-compile on the build host rather than emulating.
+#
+# -tags nodynamic is load-bearing, not a tuning knob. The AVIF and WebP decoders
+# reach for a system libavif/libwebp through purego, which emits
+# //go:cgo_import_dynamic and yields a dynamically linked binary even under
+# CGO_ENABLED=0. distroless/static has no loader, so that binary dies at exec
+# with a bare "no such file or directory" -- it builds and pushes fine and fails
+# on first run. The tag drops the dlopen path and leaves the embedded WASM
+# decoder, which is what this image would fall back to anyway: there is no
+# system libavif in here to find.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /longbox ./cmd/longbox
+    go build -trimpath -tags nodynamic -ldflags="-s -w" -o /longbox ./cmd/longbox
 # Create the data and library dirs here so they can be owned by the nonroot
 # runtime user; a mounted named volume inherits this ownership. distroless has no
 # shell, so there is no chance to mkdir at runtime.
