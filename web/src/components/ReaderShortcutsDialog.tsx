@@ -21,6 +21,7 @@ const GROUPS: { heading: string; rows: { keys: string[]; label: string }[] }[] =
     heading: "Layout",
     rows: [
       { keys: ["f"], label: "Cycle fit: height, width, original" },
+      { keys: ["Shift", "F"], label: "Toggle fullscreen" },
       { keys: ["s"], label: "Toggle two-page spread" },
       { keys: ["d"], label: "Toggle right-to-left reading order" },
     ],
