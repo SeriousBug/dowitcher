@@ -13,7 +13,7 @@ import { TagEditorDialog } from "../components/TagEditorDialog";
 import { useAuth } from "../auth/AuthProvider";
 import { useLiveData } from "../live/LiveData";
 import { wsClient } from "../api/ws";
-import { HttpError } from "../api/http";
+import { HttpError, isUnanswered } from "../api/http";
 import { fetchComics } from "../api/comics";
 import { cacheLibraryPage, readLibraryPage } from "../offline/metaCache";
 import { comicLabel } from "../lib/format";
@@ -106,7 +106,7 @@ export function LibraryPage() {
         if (pageParam === 0) void cacheLibraryPage(filterKey, page);
         return page;
       } catch (err) {
-        if (err instanceof HttpError || pageParam !== 0) throw err;
+        if (!isUnanswered(err) || pageParam !== 0) throw err;
         const cached = await readLibraryPage(filterKey);
         // Returning cached data resolves the query, so it never enters the
         // retry backoff — offline, the shelf is on screen immediately rather

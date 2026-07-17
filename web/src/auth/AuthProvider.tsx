@@ -1,6 +1,6 @@
 import { createContext, use, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { http, HttpError } from "../api/http";
+import { http, HttpError, isUnanswered } from "../api/http";
 import { clearOfflineData } from "../offline/downloads";
 import { cacheSession, forgetCachedSession, readCachedSession } from "../offline/sessionCache";
 import type { Session, User, Credential } from "../api/generated";
@@ -34,10 +34,7 @@ async function fetchSession(): Promise<Session | null> {
       await forgetCachedSession();
       return null;
     }
-    // Only a transport failure falls back. An HttpError means the server did
-    // reach us, and a broken server that answers 500 should surface as broken
-    // rather than resolve to a stale identity.
-    if (err instanceof HttpError) throw err;
+    if (!isUnanswered(err)) throw err;
     const cached = await readCachedSession();
     if (cached) return cached;
     throw err;

@@ -9,6 +9,23 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * Whether a request went unanswered, as opposed to being answered badly.
+ *
+ * A dead network and a 5xx are the same fact wearing different clothes: nothing
+ * that could have answered got to look at the request. Which one surfaces is an
+ * accident of where the failure sits — a phone in a tunnel gets the TypeError
+ * fetch() rejects with, the same phone behind a proxy fronting a crashed server
+ * gets a 502.
+ *
+ * This is the line every offline fallback draws: past it, serve what's on disk.
+ * A 4xx is on the near side, because it is the server answering — a 404 means
+ * the comic is gone, not that we couldn't ask.
+ */
+export function isUnanswered(err: unknown): boolean {
+  return !(err instanceof HttpError) || err.status >= 500;
+}
+
 type Json = Record<string, unknown> | unknown[] | null;
 
 interface RequestOptions extends Omit<RequestInit, "body"> {
