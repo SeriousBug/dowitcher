@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Combobox, Dialog, Portal, useListCollection } from "@ark-ui/react";
+import { useEffect, useMemo, useState } from "react";
+import { Combobox, Dialog, Portal, createListCollection } from "@ark-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Tag as TagIcon, X } from "lucide-react";
+import { Check, Plus, Tag as TagIcon, X } from "lucide-react";
 import { css } from "styled-system/css";
 import { hstack, vstack } from "styled-system/patterns";
 import { http, HttpError } from "../api/http";
@@ -153,25 +153,23 @@ export function TagPicker({
   loading?: boolean;
 }) {
   const [input, setInput] = useState("");
-  // Which item the keyboard is sitting on, so Enter can tell "pick this one"
-  // apart from "coin a new tag". allowCustomValue lets the input hold a value
-  // the list doesn't have; it does not, on its own, commit it to a selection.
-  const highlighted = useRef<string | null>(null);
+  const query = input.trim();
 
-  const { collection, filter, set } = useListCollection<string>({
-    initialItems: all,
-    filter: (itemText, filterText) => itemText.toLowerCase().includes(filterText.toLowerCase()),
-  });
+  // A tag that doesn't exist yet is offered as an ordinary item at the top of
+  // the list rather than as a keystroke someone has to know about, so it can be
+  // clicked, and so Enter reaches it through the same path as any other item.
+  const draft = useMemo(() => {
+    if (!query) return null;
+    const taken = [...all, ...selected].some((t) => t.toLowerCase() === query.toLowerCase());
+    return taken ? null : query;
+  }, [query, all, selected]);
 
-  // The tag list arrives after this mounts, and useListCollection only reads
-  // initialItems once.
-  useEffect(() => set(all), [all, set]);
-
-  function add(tag: string) {
-    const clean = tag.trim();
-    if (!clean || selected.includes(clean)) return;
-    onChange([...selected, clean]);
-  }
+  const collection = useMemo(() => {
+    const matches = query
+      ? all.filter((name) => name.toLowerCase().includes(query.toLowerCase()))
+      : all;
+    return createListCollection({ items: draft ? [draft, ...matches] : matches });
+  }, [all, query, draft]);
 
   return (
     <div className={vstack({ gap: "3", alignItems: "stretch" })}>
@@ -180,20 +178,19 @@ export function TagPicker({
         multiple
         allowCustomValue
         closeOnSelect={false}
+        openOnClick
+        // Highlighting the first item as you type is what makes Enter land on
+        // the new tag: it is the item Enter is already aimed at.
+        inputBehavior="autohighlight"
         value={selected}
         inputValue={input}
         onValueChange={(d) => {
-          onChange(d.value);
+          onChange(d.value.map((t) => t.trim()));
           // Clearing the box after each pick is what makes a run of tags feel
           // like typing a list rather than editing one field over and over.
           setInput("");
-          filter("");
         }}
-        onHighlightChange={(d) => (highlighted.current = d.highlightedValue)}
-        onInputValueChange={(d) => {
-          setInput(d.inputValue);
-          filter(d.inputValue);
-        }}
+        onInputValueChange={(d) => setInput(d.inputValue)}
         className={vstack({ gap: "2", alignItems: "stretch" })}
       >
         <Combobox.Label className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>
@@ -214,15 +211,6 @@ export function TagPicker({
           <TagIcon size={15} className={css({ color: "ink.500", flexShrink: 0 })} />
           <Combobox.Input
             placeholder={loading ? "Loading tags…" : "Type to search or invent one"}
-            onKeyDown={(e) => {
-              // With an item highlighted, Enter belongs to the list. With none,
-              // it means the tag they just typed doesn't exist yet.
-              if (e.key !== "Enter" || highlighted.current || !input.trim()) return;
-              e.preventDefault();
-              add(input);
-              setInput("");
-              filter("");
-            }}
             className={css({
               flex: "1",
               minW: "0",
@@ -235,7 +223,7 @@ export function TagPicker({
           />
         </Combobox.Control>
         <Portal>
-          <Combobox.Positioner className={css({ zIndex: "60" })}>
+          <Combobox.Positioner>
             <Combobox.Content
               className={vstack({
                 gap: "0.5",
@@ -244,6 +232,10 @@ export function TagPicker({
                 maxH: "56",
                 overflowY: "auto",
                 p: "1.5",
+                // The positioner copies this onto itself as --z-index, which is
+                // the only way past the dialog's own layer: it sets z-index
+                // inline, so a rule aimed at the positioner never lands.
+                zIndex: "60",
                 bg: "surfaceRaised",
                 borderWidth: "1px",
                 borderColor: "border",
@@ -254,7 +246,9 @@ export function TagPicker({
               <Combobox.Empty
                 className={css({ px: "3", py: "2.5", fontSize: "sm", color: "textMuted" })}
               >
-                No tag by that name yet — press Enter to make it.
+                {selected.includes(query)
+                  ? "You've already got that one."
+                  : "No tags yet — type one to make it."}
               </Combobox.Empty>
               {collection.items.map((name) => (
                 <Combobox.Item
@@ -273,7 +267,14 @@ export function TagPicker({
                     "&[data-state='checked']": { color: "magenta.300" },
                   })}
                 >
-                  <Combobox.ItemText>{name}</Combobox.ItemText>
+                  {name === draft ? (
+                    <Combobox.ItemText className={hstack({ gap: "2", color: "magenta.300" })}>
+                      <Plus size={14} />
+                      Create “{name}”
+                    </Combobox.ItemText>
+                  ) : (
+                    <Combobox.ItemText>{name}</Combobox.ItemText>
+                  )}
                   <Combobox.ItemIndicator>
                     <Check size={14} />
                   </Combobox.ItemIndicator>
