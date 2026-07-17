@@ -87,6 +87,10 @@ export function ReaderPage({ id }: { id: string }) {
 
   const [page, setPage] = useState(0);
   const [chromeVisible, setChromeVisible] = useState(true);
+  // The left/right arrows label the pointer tap-zones, so they only make sense
+  // when a pointer summoned the chrome. Turning pages from the keyboard reveals
+  // the toolbar and scrubber but leaves these off.
+  const [arrowsVisible, setArrowsVisible] = useState(true);
   const [chromePinned, setChromePinned] = useState(false);
   const [activity, setActivity] = useState(0);
   const [resumeOffer, setResumeOffer] = useState<number | null>(null);
@@ -254,8 +258,9 @@ export function ReaderPage({ id }: { id: string }) {
     [turnReading, rtl],
   );
 
-  const showChrome = useCallback(() => {
+  const showChrome = useCallback((withArrows = true) => {
     setChromeVisible(true);
+    setArrowsVisible(withArrows);
     setActivity((n) => n + 1);
   }, []);
 
@@ -338,8 +343,9 @@ export function ReaderPage({ id }: { id: string }) {
         default:
           return;
       }
-      // A key press means the reader is here; remind them where they are.
-      showChrome();
+      // A key press means the reader is here; remind them where they are — but
+      // the arrows are pointer affordances, so leave them off for the keyboard.
+      showChrome(false);
     }
     // Capture, so this runs before the dialog's own Escape handling rather than
     // after it. Ark closes on Escape from a listener below us, and React flushes
@@ -549,7 +555,7 @@ export function ReaderPage({ id }: { id: string }) {
 
   return (
     <div
-      onMouseMove={showChrome}
+      onMouseMove={() => showChrome()}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
       className={cx(
@@ -613,7 +619,7 @@ export function ReaderPage({ id }: { id: string }) {
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && canGoLeft ? 0.7 : 0,
+          opacity: chromeVisible && arrowsVisible && canGoLeft ? 0.7 : 0,
           transition: "opacity 0.25s ease",
           _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
@@ -652,7 +658,7 @@ export function ReaderPage({ id }: { id: string }) {
           px: "4",
           color: "ink.300",
           cursor: "pointer",
-          opacity: chromeVisible && canGoRight ? 0.7 : 0,
+          opacity: chromeVisible && arrowsVisible && canGoRight ? 0.7 : 0,
           transition: "opacity 0.25s ease",
           _motionReduce: { transition: "none" },
           _disabled: { cursor: "default" },
