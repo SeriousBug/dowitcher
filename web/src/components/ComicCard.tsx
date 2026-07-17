@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { BookOpen, FileWarning } from "lucide-react";
 import { css } from "styled-system/css";
-import { flex, vstack } from "styled-system/patterns";
+import { flex, hstack, vstack } from "styled-system/patterns";
 import { comicLabel } from "../lib/format";
 import type { Comic, Progress } from "../api/generated";
 
@@ -17,6 +17,9 @@ export function ComicCard({ comic, progress }: { comic: Comic; progress?: Progre
     progress && progress.pageCount > 0
       ? Math.round(((progress.page + 1) / progress.pageCount) * 100)
       : 0;
+  // A heavily tagged comic would otherwise curtain off its own cover.
+  const tags = (comic.tags ?? []).slice(0, 4);
+  const extra = (comic.tags?.length ?? 0) - tags.length;
 
   return (
     <Link
@@ -31,6 +34,7 @@ export function ComicCard({ comic, progress }: { comic: Comic; progress?: Progre
         _hover: { transform: "translateY(-3px)" },
         "&:hover .cover": { boxShadow: "pop", borderColor: "ink.600" },
         "&:hover .title": { color: "accent" },
+        "&:hover .cover-tags, &:focus-visible .cover-tags": { opacity: 1 },
       })}
     >
       <div
@@ -81,6 +85,55 @@ export function ComicCard({ comic, progress }: { comic: Comic; progress?: Progre
             aria-label="This file has gone missing"
           >
             <FileWarning size={15} />
+          </span>
+        )}
+
+        {tags.length > 0 && (
+          <span
+            className={`cover-tags ${hstack({
+              position: "absolute",
+              left: "0",
+              right: "0",
+              bottom: "0",
+              gap: "1",
+              flexWrap: "wrap",
+              px: "2",
+              pt: "6",
+              pb: "2.5",
+              opacity: 0,
+              transition: "opacity 0.15s ease",
+              bgGradient: "to-t",
+              gradientFrom: "rgba(10, 8, 9, 0.92)",
+              gradientTo: "rgba(10, 8, 9, 0)",
+              // Touch has no hover, and covering the art permanently on a phone
+              // costs more than the tags are worth there.
+              "@media (hover: none)": { display: "none" },
+            })}`}
+          >
+            {tags.map((tag) => (
+              <span
+                key={tag}
+                className={css({
+                  px: "1.5",
+                  py: "0.5",
+                  borderRadius: "sm",
+                  bg: "rgba(10, 8, 9, 0.7)",
+                  color: "magenta.300",
+                  fontSize: "2xs",
+                  fontWeight: "semibold",
+                  lineHeight: "1.4",
+                  maxW: "full",
+                  truncate: true,
+                })}
+              >
+                {tag}
+              </span>
+            ))}
+            {extra > 0 && (
+              <span className={css({ fontSize: "2xs", color: "ink.300", fontWeight: "semibold" })}>
+                +{extra}
+              </span>
+            )}
           </span>
         )}
 
