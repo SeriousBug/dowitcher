@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/SeriousBug/dowitcher/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/imports"
 	"github.com/SeriousBug/dowitcher/internal/library"
 	"github.com/SeriousBug/dowitcher/internal/store"
 )
@@ -104,6 +106,116 @@ func (s *Server) progressFor(userID string, comics []api.Comic) ([]api.Progress,
 		}
 	}
 	return out, nil
+}
+
+// handleUploadComic accepts one ready-made CBZ and files it as a comic.
+//
+// Separate from handleCreateImport rather than a branch inside it: that endpoint
+// exists to run the dedupe pipeline over loose images, and none of what it offers
+// — a threshold, a re-encode, a dupe report, a job to watch — means anything for
+// an archive that is already packed. The upload is streamed to disk part by part
+// for the same reason imports are, since a CBZ is just as easily gigabytes.
+//
+// The reply is the finished comic rather than a job: the work after the last byte
+// lands is a stat and a rename, so there is nothing to watch.
+func (s *Server) handleUploadComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	if !s.needImporter(w) {
+		return
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "expected a multipart upload")
+		return
+	}
+	dir, err := os.MkdirTemp(s.cfg.ImportTempDir, "dowitcher-cbz-*")
+	if err != nil {
+		log.Printf("cbz temp dir: %v", err)
+		writeErr(w, http.StatusInternalServerError, "the server had nowhere to put the upload")
+		return
+	}
+	// Adopt moves the archive out on success; the directory is this handler's
+	// either way.
+	defer os.RemoveAll(dir)
+
+	budget := s.cfg.MaxUploadBytes
+	if budget <= 0 {
+		budget = DefaultMaxUploadBytes
+	}
+	var opts api.ImportOptions
+	srcPath := ""
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "the upload ended early or was malformed")
+			return
+		}
+		if part.FormName() == optionsPart {
+			if err := json.NewDecoder(io.LimitReader(part, maxOptionsBytes)).Decode(&opts); err != nil {
+				part.Close()
+				writeErr(w, http.StatusBadRequest, "the upload options were not valid JSON")
+				return
+			}
+			part.Close()
+			continue
+		}
+		rel, ok := uploadName(part.FileName())
+		if !ok {
+			part.Close()
+			writeErr(w, http.StatusBadRequest, "the uploaded file had an unusable name: "+part.FileName())
+			return
+		}
+		// One file, so any directory part of the name is noise. The base name is
+		// kept rather than discarded because Adopt reads the comic's series and
+		// number out of it.
+		name := path.Base(rel)
+		if !imports.IsCBZName(name) {
+			part.Close()
+			writeErr(w, http.StatusBadRequest, "only a .cbz file can be uploaded here, got: "+name)
+			return
+		}
+		if srcPath != "" {
+			part.Close()
+			writeErr(w, http.StatusBadRequest, "upload one CBZ at a time")
+			return
+		}
+		dst := filepath.Join(dir, name)
+		if _, err := writeUpload(dst, part, budget); err != nil {
+			part.Close()
+			if errors.Is(err, errUploadTooBig) {
+				writeErr(w, http.StatusRequestEntityTooLarge, "this upload is larger than the server allows")
+				return
+			}
+			log.Printf("cbz upload %s: %v", name, err)
+			writeErr(w, http.StatusInternalServerError, "the upload could not be written to disk")
+			return
+		}
+		part.Close()
+		srcPath = dst
+	}
+	if srcPath == "" {
+		writeErr(w, http.StatusBadRequest, "no CBZ was uploaded")
+		return
+	}
+
+	comic, err := s.importer.Adopt(u.ID, srcPath, opts)
+	switch {
+	case err == nil:
+	case errors.Is(err, imports.ErrNotCBZ):
+		writeErr(w, http.StatusBadRequest, "that file could not be read as a CBZ")
+		return
+	case errors.Is(err, imports.ErrNoImages):
+		writeErr(w, http.StatusBadRequest, "that CBZ has no readable pages in it")
+		return
+	default:
+		log.Printf("adopt cbz: %v", err)
+		writeErr(w, http.StatusInternalServerError, "the comic could not be added to the library")
+		return
+	}
+	writeJSON(w, http.StatusOK, comic)
 }
 
 func (s *Server) handleGetComic(w http.ResponseWriter, r *http.Request) {

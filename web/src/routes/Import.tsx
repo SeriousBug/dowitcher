@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Copy,
+  FileArchive,
   FolderUp,
   Loader2,
   TriangleAlert,
@@ -20,8 +21,8 @@ import { useLiveData } from "../live/LiveData";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { formatBytes } from "../lib/format";
-import { filesFromDrop, isImage, pathOf, uploadWithProgress } from "../lib/upload";
-import type { Collection, DupeGroup, ImportJob, ImportOptions } from "../api/generated";
+import { filesFromDrop, isCBZ, isImage, pathOf, uploadWithProgress } from "../lib/upload";
+import type { Collection, Comic, DupeGroup, ImportJob, ImportOptions } from "../api/generated";
 
 const STAGE_LABEL: Record<string, string> = {
   uploading: "Uploading",
@@ -76,8 +77,12 @@ export function ImportPage() {
   const { jobs } = useLiveData();
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const cbzInputRef = useRef<HTMLInputElement>(null);
 
   const [files, setFiles] = useState<File[]>([]);
+  // A ready-made CBZ and a folder of images are the two things this page takes,
+  // and they are exclusive: one skips the pipeline entirely.
+  const [cbz, setCbz] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sensitivity, setSensitivity] = useState<SensitivityId>("normal");
   const [manual, setManual] = useState(false);
@@ -97,10 +102,35 @@ export function ImportPage() {
     queryFn: () => http.get<Collection[]>("/api/collections"),
   });
 
-  const totalBytes = files.reduce((n, f) => n + f.size, 0);
+  const totalBytes = cbz ? cbz.size : files.reduce((n, f) => n + f.size, 0);
 
   function take(picked: File[]) {
+    const archives = picked.filter(isCBZ);
     const images = picked.filter(isImage);
+
+    // A CBZ only wins when it arrived on its own. Mixed with images it is an
+    // ambiguous drop, and packing the images is the thing this page is for.
+    if (archives.length > 0 && images.length === 0) {
+      if (archives.length > 1) {
+        toaster.create({
+          type: "error",
+          title: "One CBZ at a time",
+          description: "Dowitcher files a CBZ as a single comic, so it takes one per upload.",
+        });
+        return;
+      }
+      setCbz(archives[0]);
+      setFiles([]);
+      if (!options.name) {
+        // The server reads the same name for a title, so leaving it empty is
+        // fine. It is filled in anyway because a name in a box is one the user
+        // can correct before it lands, and a name behind an upload is not.
+        setOptions((o) => ({ ...o, name: archives[0].name.replace(/\.(cbz|zip)$/i, "") }));
+      }
+      return;
+    }
+
+    setCbz(null);
     setFiles(images);
     // The folder's own name is the obvious title, and typing it again is busywork.
     if (images.length > 0 && !options.name) {
@@ -110,14 +140,42 @@ export function ImportPage() {
     if (picked.length > 0 && images.length === 0) {
       toaster.create({
         type: "error",
-        title: "No images in there",
-        description: "Dowitcher packs images into a CBZ, and that folder didn't have any.",
+        title: "Nothing to import in there",
+        description: "Dowitcher packs images into a CBZ. Drop a folder of images, or one CBZ.",
       });
     }
   }
 
+  function clearPick() {
+    setFiles([]);
+    setCbz(null);
+  }
+
   const start = useMutation({
     mutationFn: async () => {
+      if (cbz) {
+        // Only the two options that mean anything for an archive that is already
+        // packed: what it is called, and where it goes.
+        const body: Partial<ImportOptions> = {
+          name: options.name.trim(),
+          collectionId: options.collectionId,
+        };
+        const form = new FormData();
+        form.append(
+          "options",
+          new Blob([JSON.stringify(body)], { type: "application/json" }),
+          "options.json",
+        );
+        form.append("file", cbz, cbz.name);
+
+        setSent({ loaded: 0, total: cbz.size });
+        const handle = uploadWithProgress("/api/comics", form, (loaded, total) =>
+          setSent({ loaded, total }),
+        );
+        abortRef.current = handle.abort;
+        return handle.promise;
+      }
+
       const chosen = SENSITIVITY.find((s) => s.id === sensitivity)!;
       const body: ImportOptions = {
         ...options,
@@ -142,15 +200,26 @@ export function ImportPage() {
       abortRef.current = handle.abort;
       return handle.promise;
     },
-    onSuccess: () => {
-      // The job itself now reports over the stream; the page has nothing left to
-      // ask for.
-      toaster.create({
-        type: "success",
-        title: "Upload finished",
-        description: "Dowitcher is packing it now — watch it below.",
-      });
-      setFiles([]);
+    onSuccess: (data) => {
+      if (cbz) {
+        // There is no job for an archive that was already packed: the reply is
+        // the comic itself, on the shelf by the time this runs.
+        const comic = data as Comic;
+        toaster.create({
+          type: "success",
+          title: `Added ${comic.title}`,
+          description: "It's on your shelf and ready to read.",
+        });
+      } else {
+        // The job itself now reports over the stream; the page has nothing left
+        // to ask for.
+        toaster.create({
+          type: "success",
+          title: "Upload finished",
+          description: "Dowitcher is packing it now — watch it below.",
+        });
+      }
+      clearPick();
       setOptions((o) => ({ ...o, name: "" }));
       queryClient.invalidateQueries({ queryKey: ["comics"] });
     },
@@ -161,7 +230,7 @@ export function ImportPage() {
       }
       toaster.create({
         type: "error",
-        title: "That import didn't start",
+        title: cbz ? "That upload didn't land" : "That import didn't start",
         description:
           err instanceof HttpError || err instanceof Error
             ? err.message
@@ -182,7 +251,7 @@ export function ImportPage() {
       <PageHeader
         eyebrow="Intake"
         title="Import"
-        subtitle="Point Dowitcher at a folder of images. It drops the duplicates, puts the pages in order, and packs a CBZ."
+        subtitle="Point Dowitcher at a folder of images. It drops the duplicates, puts the pages in order, and packs a CBZ. Already have one? Upload it as it is."
       />
 
       <section
@@ -214,10 +283,13 @@ export function ImportPage() {
       >
         <FolderUp size={30} className={css({ color: "ink.500" })} strokeWidth={1.5} />
         <div className={vstack({ gap: "1.5", maxW: "md" })}>
-          <h2 className={css({ fontSize: "lg", fontWeight: "bold" })}>Drop a folder of images</h2>
+          <h2 className={css({ fontSize: "lg", fontWeight: "bold" })}>
+            Drop a folder of images, or a CBZ
+          </h2>
           <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
             Pages get sorted by filename. Anything that turns out to be the same
-            image twice only makes it in once.
+            image twice only makes it in once. A CBZ is already a book, so it
+            goes straight to the shelf untouched.
           </p>
         </div>
 
@@ -231,10 +303,66 @@ export function ImportPage() {
           onChange={(e) => take([...(e.target.files ?? [])])}
           className={css({ srOnly: true })}
         />
+        <input
+          ref={cbzInputRef}
+          type="file"
+          accept=".cbz,.zip"
+          onChange={(e) => take([...(e.target.files ?? [])])}
+          className={css({ srOnly: true })}
+        />
 
-        <Button variant="primary" icon={<Upload size={16} />} onClick={() => inputRef.current?.click()}>
-          Choose a folder
-        </Button>
+        <div className={hstack({ gap: "2.5", flexWrap: "wrap", justify: "center" })}>
+          <Button
+            variant="primary"
+            icon={<Upload size={16} />}
+            onClick={() => inputRef.current?.click()}
+          >
+            Choose a folder
+          </Button>
+          <Button
+            variant="ghost"
+            icon={<FileArchive size={16} />}
+            onClick={() => cbzInputRef.current?.click()}
+          >
+            Choose a CBZ
+          </Button>
+        </div>
+
+        {cbz && (
+          <div
+            className={vstack({
+              gap: "2",
+              w: "full",
+              maxW: "md",
+              p: "3.5",
+              borderRadius: "md",
+              bg: "bg",
+              borderWidth: "1px",
+              borderColor: "border",
+            })}
+          >
+            <span className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>
+              1 CBZ · {formatBytes(cbz.size)}
+            </span>
+            <span
+              className={css({ fontSize: "xs", color: "textMuted", truncate: true, maxW: "full" })}
+            >
+              {cbz.name}
+            </span>
+            <button
+              onClick={clearPick}
+              className={css({
+                fontSize: "xs",
+                fontWeight: "semibold",
+                color: "textMuted",
+                cursor: "pointer",
+                _hover: { color: "danger" },
+              })}
+            >
+              Pick something else
+            </button>
+          </div>
+        )}
 
         {files.length > 0 && (
           <div
@@ -257,7 +385,7 @@ export function ImportPage() {
               {pathOf(files[0])} … {pathOf(files[files.length - 1])}
             </span>
             <button
-              onClick={() => setFiles([])}
+              onClick={clearPick}
               className={css({
                 fontSize: "xs",
                 fontWeight: "semibold",
@@ -312,21 +440,26 @@ export function ImportPage() {
               </select>
             </Field>
 
-            <Field label="Re-encode pages" hint="Smaller files, slower import. AVIF wins on size.">
-              <select
-                value={options.encode ?? ""}
-                onChange={(e) => setOptions({ ...options, encode: e.target.value })}
-                className={FIELD}
-              >
-                {ENCODINGS.map((e) => (
-                  <option key={e.value} value={e.value}>
-                    {e.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            {/* Everything below is the pipeline's, and a packed CBZ never goes
+                through it. Showing these against a CBZ would promise a re-encode
+                and a dedupe that are not going to happen. */}
+            {!cbz && (
+              <Field label="Re-encode pages" hint="Smaller files, slower import. AVIF wins on size.">
+                <select
+                  value={options.encode ?? ""}
+                  onChange={(e) => setOptions({ ...options, encode: e.target.value })}
+                  className={FIELD}
+                >
+                  {ENCODINGS.map((e) => (
+                    <option key={e.value} value={e.value}>
+                      {e.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
 
-            {options.encode ? (
+            {!cbz && options.encode ? (
               <Field label="Quality" hint="Higher keeps more detail and costs more space.">
                 <div className={hstack({ gap: "3" })}>
                   <input
@@ -350,6 +483,7 @@ export function ImportPage() {
             )}
           </div>
 
+          {!cbz && (
           <div className={vstack({ gap: "3", alignItems: "stretch" })}>
             <span className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>
               What counts as a duplicate
@@ -490,6 +624,7 @@ export function ImportPage() {
               </div>
             )}
           </div>
+          )}
 
           <div className={hstack({ gap: "3", justify: "flex-end", flexWrap: "wrap" })}>
             {sent && (
@@ -506,12 +641,14 @@ export function ImportPage() {
               variant="primary"
               icon={<Upload size={16} />}
               busy={start.isPending}
-              disabled={files.length === 0}
+              disabled={!cbz && files.length === 0}
               onClick={() => start.mutate()}
             >
-              {files.length === 0
-                ? "Choose a folder first"
-                : `Import ${files.length} images`}
+              {cbz
+                ? "Upload this CBZ"
+                : files.length === 0
+                  ? "Choose a folder first"
+                  : `Import ${files.length} images`}
             </Button>
           </div>
 

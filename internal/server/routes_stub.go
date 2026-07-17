@@ -50,6 +50,11 @@ type Importer interface {
 	Cancel(userID, jobID string) error
 	// Dupes is the finished job's merge report.
 	Dupes(userID, jobID string) ([]api.DupeGroup, error)
+	// Adopt files an already-packed CBZ at srcPath as a comic owned by userID.
+	// srcPath must still carry the name the uploader gave it — the comic's
+	// series and number are read out of it. It has no job because it has no
+	// pipeline: it returns the finished comic instead.
+	Adopt(userID, srcPath string, opts api.ImportOptions) (api.Comic, error)
 }
 
 // SetLibrary attaches the scanner. Set after New so the constructor signature
@@ -98,6 +103,9 @@ func (s *Server) needImporter(w http.ResponseWriter) bool {
 func (s *Server) registerLibraryRoutes() {
 	// Comics and tags.
 	s.mux.HandleFunc("GET /api/comics", s.requireAuth(s.handleListComics))
+	// Uploading a ready-made CBZ creates a comic outright, so it is a POST to the
+	// collection rather than an import: there is no job behind it to look up.
+	s.mux.HandleFunc("POST /api/comics", s.requireAuth(s.handleUploadComic))
 	s.mux.HandleFunc("GET /api/comics/{id}", s.requireAuth(s.handleGetComic))
 	s.mux.HandleFunc("GET /api/comics/{id}/pages/{n}", s.requireAuth(s.handleComicPage))
 	s.mux.HandleFunc("GET /api/comics/{id}/cover", s.requireAuth(s.handleComicCover))
