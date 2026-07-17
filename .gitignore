@@ -1,0 +1,9 @@
+# Built SPA (produced by `pnpm build`; embedded at image build time).
+# Keep the directory (via .gitkeep) so `//go:embed all:dist` compiles.
+web/dist/*
+!web/dist/.gitkeep
+web/node_modules/
+web/styled-system/
+*.db
+*.db-shm
+*.db-wal
