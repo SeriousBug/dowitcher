@@ -11,10 +11,10 @@ import { Button } from "./Button";
 import type { Comic, Tag } from "../api/generated";
 
 /**
- * Tags are server-global, so the vocabulary already in use is the useful thing to
- * offer: autocomplete against it first and let someone type a new one only when
- * nothing existing fits. A free-text field would grow four spellings of "sci-fi"
- * inside a week.
+ * Tags are the reader's own, so /api/tags is the vocabulary this user has
+ * already coined: autocomplete against it first and let them type a new one only
+ * when nothing existing fits. A free-text field would grow four spellings of
+ * "sci-fi" inside a week, and nobody else's tags are there to correct it.
  */
 export function TagEditorDialog({
   comic,

@@ -5,10 +5,12 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { css } from "styled-system/css";
 import { hstack, vstack } from "styled-system/patterns";
 import { Button } from "../components/Button";
+import { ClaimButton } from "../components/ClaimButton";
 import { ComicGrid, ComicGridSkeleton, ComicTile, TileButton } from "../components/ComicGrid";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TagEditorDialog } from "../components/TagEditorDialog";
+import { useAuth } from "../auth/AuthProvider";
 import { useLiveData } from "../live/LiveData";
 import { wsClient } from "../api/ws";
 import { HttpError } from "../api/http";
@@ -48,11 +50,23 @@ function sortComics(comics: Comic[], sort: Sort): Comic[] {
   return next;
 }
 
+/**
+ * Which comics an admin may claim or hand back. An upload is neither: it has an
+ * owner already. A claim someone else made is not offered either — the server
+ * would allow an admin to undo it, but a button to take over a colleague's
+ * shelf is not something to put a hover away from a misclick.
+ */
+function claimable(comic: Comic, isAdmin: boolean): boolean {
+  if (!isAdmin) return false;
+  return comic.source === "library" || (comic.source === "claimed" && comic.ownedByMe);
+}
+
 export function LibraryPage() {
   const { tag, q } = useSearch({ from: "/" });
   const navigate = useNavigate({ from: "/" });
   const queryClient = useQueryClient();
   const { library } = useLiveData();
+  const { user } = useAuth();
 
   const [draft, setDraft] = useState(q ?? "");
   const [sort, setSort] = useState<Sort>("added");
@@ -330,12 +344,15 @@ export function LibraryPage() {
                 comic={comic}
                 progress={progress.get(comic.id)}
                 actions={
-                  <TileButton
-                    label={`Edit tags on ${comicLabel(comic)}`}
-                    onClick={() => setEditing(comic)}
-                  >
-                    <TagIcon size={14} />
-                  </TileButton>
+                  <>
+                    {claimable(comic, user?.isAdmin ?? false) && <ClaimButton comic={comic} />}
+                    <TileButton
+                      label={`Edit tags on ${comicLabel(comic)}`}
+                      onClick={() => setEditing(comic)}
+                    >
+                      <TagIcon size={14} />
+                    </TileButton>
+                  </>
                 }
               />
             ))}

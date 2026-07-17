@@ -89,3 +89,16 @@ A comic is visible to a user if they uploaded it, or if it sits in a collection 
 flag is on, or if it came from the watched library root (which is server-wide by definition).
 Collections are private by default and the owner opts in per collection. Visibility is enforced
 in SQL in the store layer, not in handlers — see `store.visibleComics`.
+
+`comics.source` is what decides server-wide, not a NULL `owner_id`: an admin can **claim** a
+library comic (`POST /api/comics/{id}/claim`), which sets `owner_id` and flips the source from
+`library` to `claimed`. A claimed comic drops out of the `source='library'` arm and so is
+visible only to its claimer, who can share it through a collection or hand it back with
+`/unclaim`. The file never moves — a claimed path is still relative to the library root, and
+the scanner still refreshes and diffs the row, it just never writes `owner_id` or `source`
+(`UpsertComic`'s `ON CONFLICT` omits both).
+
+Tags are **per-user**: `tags` is keyed `UNIQUE(user_id, name)` and a tag is only ever readable
+by the user who wrote it. Seeing a comic is therefore the only requirement to tag it — a tag
+cannot affect what anyone else reads. Every tag query filters on `tags.user_id` *and* the
+visibility fragment, since a comic can stop being visible after it was tagged.

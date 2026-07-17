@@ -15,10 +15,15 @@ import (
 var ErrNotFound = errors.New("not found")
 
 // Comic sources. A library comic is server-wide by definition; an upload
-// belongs to the user who made it.
+// belongs to the user who made it. A claimed comic is a library comic an admin
+// took into their own library: its file still lives under the library root and
+// its path is still relative to it, but it has an owner and so is no longer
+// server-wide. Claiming is what makes a comic dropped into the watched folder
+// private to one person without moving the file.
 const (
 	SourceLibrary = "library"
 	SourceUpload  = "upload"
+	SourceClaimed = "claimed"
 )
 
 // --- Users ---
@@ -391,6 +396,11 @@ func (s *Store) DeleteExpiredSessions() error {
 // comic read path in this package must include it: enforcing visibility here
 // rather than in handlers means a new handler cannot forget to.
 //
+// The first arm tests source='library' rather than a NULL owner_id, which is
+// what makes claiming work: a claimed comic is still under the library root but
+// its source is 'claimed', so it falls through to the owner arm and only its
+// claimer sees it. The two must not be conflated here.
+//
 // The shared arm is restricted to collections owned by the comic's own owner
 // because only the uploader may opt their upload in. Without that, anyone who
 // could see a shared upload could add it to a collection of their own and share
@@ -429,8 +439,13 @@ type ComicRow struct {
 	Source      string
 }
 
+// owner_id and source ride along because the client needs to know whether a
+// comic is claimable and whether the claim is the caller's. scanComics folds
+// them into api.Comic.Source and api.Comic.OwnedByMe rather than exposing the
+// owner's id, which is nobody's business but the server's.
 const comicCols = `comics.id,comics.path,comics.title,comics.series,comics.number,comics.volume,
-	comics.summary,comics.page_count,comics.file_size,comics.added_at,comics.modified_at,comics.missing`
+	comics.summary,comics.page_count,comics.file_size,comics.added_at,comics.modified_at,comics.missing,
+	comics.owner_id,comics.source`
 
 // UpsertComic inserts a comic or updates the existing row with the same path,
 // keeping its id so tags and progress stay attached across a rescan.
@@ -482,10 +497,13 @@ func (s *Store) ComicRowByID(id string) (ComicRow, error) {
 
 // CountLibraryComics counts the comics under the watched root whose file is
 // present. Missing rows are excluded: they are kept so that a remount restores
-// them, but a status card that counts comics nobody can open is lying.
+// them, but a status card that counts comics nobody can open is lying. Claimed
+// comics count too — this is how many files the scanner is responsible for, not
+// how many any one user can see, which is CountVisibleComics.
 func (s *Store) CountLibraryComics() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM comics WHERE source=? AND missing=0`, SourceLibrary).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM comics WHERE source IN (?,?) AND missing=0`,
+		SourceLibrary, SourceClaimed).Scan(&n)
 	return n, err
 }
 
@@ -520,10 +538,14 @@ func (s *Store) SetComicMissing(id string, missing bool) error {
 	return err
 }
 
-// ListComicPaths returns every known library path, for the scanner to diff the
-// filesystem against.
+// ListComicPaths returns every known path under the library root, for the
+// scanner to diff the filesystem against. Claimed comics are included: claiming
+// does not move the file, so a claimed row whose file is gone is exactly as
+// missing as a library one, and leaving it out would mean a deleted claim never
+// gets flagged.
 func (s *Store) ListComicPaths() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT id,path FROM comics WHERE source=?`, SourceLibrary)
+	rows, err := s.db.Query(`SELECT id,path FROM comics WHERE source IN (?,?)`,
+		SourceLibrary, SourceClaimed)
 	if err != nil {
 		return nil, err
 	}
@@ -537,6 +559,47 @@ func (s *Store) ListComicPaths() (map[string]string, error) {
 		out[p] = id
 	}
 	return out, rows.Err()
+}
+
+// ClaimComic takes a library comic into userID's own library: the row gains an
+// owner and stops being server-wide, so everyone else loses sight of it. The
+// file does not move — only a library comic can be claimed, and its path stays
+// relative to the library root.
+//
+// Restricting the source to 'library' is what keeps this from being a way to
+// take somebody else's upload: an upload already has an owner, and claiming is
+// only defined for the comics that have none.
+func (s *Store) ClaimComic(userID, comicID string) error {
+	res, err := s.db.Exec(`UPDATE comics SET owner_id=?, source=?
+		WHERE id=? AND source=?`, userID, SourceClaimed, comicID, SourceLibrary)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UnclaimComic hands a claimed comic back to the server, making it server-wide
+// again. Only the claimer may, unless the caller is an admin: a claim is
+// personal, but an admin has to be able to undo one made by an account that is
+// no longer around to undo it themselves.
+func (s *Store) UnclaimComic(userID string, isAdmin bool, comicID string) error {
+	q := `UPDATE comics SET owner_id=NULL, source=? WHERE id=? AND source=?`
+	args := []any{SourceLibrary, comicID, SourceClaimed}
+	if !isAdmin {
+		q += ` AND owner_id=?`
+		args = append(args, userID)
+	}
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteComic removes a comic row outright.
@@ -560,7 +623,7 @@ func (s *Store) GetComic(userID, id string) (api.Comic, error) {
 	if err != nil {
 		return api.Comic{}, err
 	}
-	out, err := s.scanComics(rows)
+	out, err := s.scanComics(userID, rows)
 	if err != nil {
 		return api.Comic{}, err
 	}
@@ -578,7 +641,7 @@ func (s *Store) ListComics(userID string) ([]api.Comic, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.scanComics(rows)
+	return s.scanComics(userID, rows)
 }
 
 // ListComicsInCollection returns a collection's comics in their stored order,
@@ -593,7 +656,7 @@ func (s *Store) ListComicsInCollection(userID, collectionID string) ([]api.Comic
 	if err != nil {
 		return nil, err
 	}
-	return s.scanComics(rows)
+	return s.scanComics(userID, rows)
 }
 
 // ComicFilter narrows a library listing. A zero field is not a filter; Limit 0
@@ -633,9 +696,11 @@ func (s *Store) ListComicsFiltered(userID string, f ComicFilter) ([]api.Comic, i
 		order = ` ORDER BY cc.position`
 	}
 	if f.Tag != "" {
+		// Matched against the caller's own tag rows: filtering by a name another
+		// user coined must find nothing rather than their comics.
 		where = append(where, `EXISTS (SELECT 1 FROM comic_tags ct JOIN tags t ON t.id=ct.tag_id
-			WHERE ct.comic_id=comics.id AND t.name=?)`)
-		args = append(args, f.Tag)
+			WHERE ct.comic_id=comics.id AND t.user_id=? AND t.name=?)`)
+		args = append(args, userID, f.Tag)
 	}
 	if f.Series != "" {
 		where = append(where, `comics.series=?`)
@@ -663,7 +728,7 @@ func (s *Store) ListComicsFiltered(userID string, f ComicFilter) ([]api.Comic, i
 	if err != nil {
 		return nil, 0, err
 	}
-	out, err := s.scanComics(rows)
+	out, err := s.scanComics(userID, rows)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -685,19 +750,24 @@ func (s *Store) CountVisibleComics(userID string) (int, error) {
 	return n, err
 }
 
-// scanComics materialises comic rows and attaches their tags. It closes rows.
-func (s *Store) scanComics(rows *sql.Rows) ([]api.Comic, error) {
+// scanComics materialises comic rows and attaches userID's tags. It closes rows.
+// userID is needed for the tags: they are per-user, so the same row lists
+// different labels depending on who is reading it.
+func (s *Store) scanComics(userID string, rows *sql.Rows) ([]api.Comic, error) {
 	defer rows.Close()
 	var out []api.Comic
 	var ids []string
 	for rows.Next() {
 		var c api.Comic
 		var missing int
+		var owner sql.NullString
 		if err := rows.Scan(&c.ID, &c.Path, &c.Title, &c.Series, &c.Number, &c.Volume,
-			&c.Summary, &c.PageCount, &c.FileSize, &c.AddedAt, &c.ModifiedAt, &missing); err != nil {
+			&c.Summary, &c.PageCount, &c.FileSize, &c.AddedAt, &c.ModifiedAt, &missing,
+			&owner, &c.Source); err != nil {
 			return nil, err
 		}
 		c.Missing = missing != 0
+		c.OwnedByMe = owner.Valid && owner.String == userID
 		c.Tags = []string{}
 		out = append(out, c)
 		ids = append(ids, c.ID)
@@ -708,7 +778,7 @@ func (s *Store) scanComics(rows *sql.Rows) ([]api.Comic, error) {
 	if len(out) == 0 {
 		return out, nil
 	}
-	tags, err := s.tagsForComics(ids)
+	tags, err := s.tagsForComics(userID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -725,12 +795,13 @@ func (s *Store) scanComics(rows *sql.Rows) ([]api.Comic, error) {
 // tagsForComics loads tags for a set of comics in one query rather than one per
 // comic, which is the difference between a library list being instant and being
 // a few hundred round trips.
-func (s *Store) tagsForComics(ids []string) (map[string][]string, error) {
+func (s *Store) tagsForComics(userID string, ids []string) (map[string][]string, error) {
 	q := `SELECT ct.comic_id, t.name FROM comic_tags ct JOIN tags t ON t.id=ct.tag_id
-		WHERE ct.comic_id IN (` + placeholders(len(ids)) + `) ORDER BY t.name`
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+		WHERE t.user_id=? AND ct.comic_id IN (` + placeholders(len(ids)) + `) ORDER BY t.name`
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, userID)
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -755,36 +826,24 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// SetComicTags replaces a comic's tags, creating tag rows as needed. It refuses
-// a comic the user cannot see, and — because tags are server-global — a comic
-// the user does not own: shared makes an upload readable, never writable, so
-// seeing someone's upload must not be a licence to rewrite what everybody reads
-// on it. Library comics have no uploader to defer to, so anyone who can see them
-// can tag them; admins are exempt. This is the same rule handleDeleteComic
-// applies to the other mutation of somebody else's upload.
-//
-// The refusal is ErrNotFound rather than a distinct sentinel purely because it
-// is the one the caller already maps: a non-owner CAN see a shared comic, so 404
-// is a small lie where 403 is the honest answer. It fails closed, which is what
-// matters here; see the note in the store review about giving this its own
-// sentinel once the handler can map it.
-func (s *Store) SetComicTags(userID string, isAdmin bool, comicID string, tags []string) error {
+// SetComicTags replaces userID's tags on a comic, creating tag rows as needed.
+// It refuses a comic the user cannot see, and nothing else: a tag is the
+// caller's own label on someone else's shelf, so it is writable by anyone who
+// can read the comic. Ownership does not enter into it — writing a tag cannot
+// affect what any other user reads, because no other user can see it.
+func (s *Store) SetComicTags(userID, comicID string, tags []string) error {
 	if _, err := s.GetComic(userID, comicID); err != nil {
 		return err
-	}
-	row, err := s.ComicRowByID(comicID)
-	if err != nil {
-		return err
-	}
-	if row.OwnerID != userID && row.Source != SourceLibrary && !isAdmin {
-		return ErrNotFound
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM comic_tags WHERE comic_id=?`, comicID); err != nil {
+	// Scoped to this user's tag rows: a full delete would strip everyone else's
+	// tags off the comic on every save.
+	if _, err := tx.Exec(`DELETE FROM comic_tags WHERE comic_id=?
+		AND tag_id IN (SELECT id FROM tags WHERE user_id=?)`, comicID, userID); err != nil {
 		return err
 	}
 	for _, name := range tags {
@@ -792,32 +851,37 @@ func (s *Store) SetComicTags(userID string, isAdmin bool, comicID string, tags [
 		if name == "" {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO tags(id,name) VALUES(?,?) ON CONFLICT(name) DO NOTHING`,
-			randID(), name); err != nil {
+		if _, err := tx.Exec(`INSERT INTO tags(id,user_id,name) VALUES(?,?,?)
+			ON CONFLICT(user_id,name) DO NOTHING`, randID(), userID, name); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO comic_tags(comic_id,tag_id)
-			SELECT ?, id FROM tags WHERE name=? ON CONFLICT DO NOTHING`, comicID, name); err != nil {
+			SELECT ?, id FROM tags WHERE user_id=? AND name=? ON CONFLICT DO NOTHING`,
+			comicID, userID, name); err != nil {
 			return err
 		}
 	}
 	// Tags nobody references are noise in the sidebar, so drop them here rather
-	// than on a sweep that may never run.
-	if _, err := tx.Exec(`DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM comic_tags)`); err != nil {
+	// than on a sweep that may never run. Scoped to this user: another user's
+	// orphans are not this transaction's business.
+	if _, err := tx.Exec(`DELETE FROM tags WHERE user_id=?
+		AND id NOT IN (SELECT tag_id FROM comic_tags)`, userID); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// ListTags returns tags with the count of comics userID may see under each.
-// Counting against visibility keeps a tag from advertising someone else's
-// private upload.
+// ListTags returns userID's own tags with the count of comics they may see under
+// each. Tags are per-user, so this never shows another user's vocabulary; the
+// visibility fragment still applies because a comic can stop being visible after
+// it was tagged, and a count must not advertise one that has.
 func (s *Store) ListTags(userID string) ([]api.Tag, error) {
 	vis, args := visibleComics(userID)
+	args = append(args, userID)
 	rows, err := s.db.Query(`SELECT t.name, COUNT(*) FROM tags t
 		JOIN comic_tags ct ON ct.tag_id=t.id
 		JOIN comics ON comics.id=ct.comic_id
-		WHERE `+vis+`
+		WHERE `+vis+` AND t.user_id=?
 		GROUP BY t.id ORDER BY t.name`, args...)
 	if err != nil {
 		return nil, err

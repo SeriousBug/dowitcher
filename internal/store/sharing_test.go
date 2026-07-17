@@ -112,13 +112,13 @@ func TestLibraryComicStaysVisibleInAnyonesCollection(t *testing.T) {
 	assertListLen(t, st, bob.ID, 1)
 }
 
-// TestSetComicTagsRequiresOwnership: tags are server-global, so a shared upload
-// being readable must not make its tags writable by its readers.
-func TestSetComicTagsRequiresOwnership(t *testing.T) {
+// TestTagsArePerUser is the tag model in one test: a tag is the caller's own
+// label, so seeing a comic is enough to tag it, and two users tagging the same
+// comic never see each other's words.
+func TestTagsArePerUser(t *testing.T) {
 	st := testStore(t)
 	alice, _ := st.CreateUser(NewID(), "alice", false)
 	bob, _ := st.CreateUser(NewID(), "bob", false)
-	admin, _ := st.CreateUser(NewID(), "root", true)
 
 	comic := ComicRow{ID: NewID(), Path: "uploads/alice/t.cbz", Title: "T",
 		OwnerID: alice.ID, Source: SourceUpload, PageCount: 2}
@@ -132,26 +132,56 @@ func TestSetComicTagsRequiresOwnership(t *testing.T) {
 	if err := st.AddToCollection(alice.ID, col.ID, comic.ID); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if _, err := st.GetComic(bob.ID, comic.ID); err != nil {
-		t.Fatalf("precondition: bob must be able to see the comic he is refused write on: %v", err)
-	}
 
-	if err := st.SetComicTags(alice.ID, false, comic.ID, []string{"owner-tag"}); err != nil {
+	if err := st.SetComicTags(alice.ID, comic.ID, []string{"owner-tag"}); err != nil {
 		t.Fatalf("owner should be able to tag their upload: %v", err)
 	}
-	if err := st.SetComicTags(bob.ID, false, comic.ID, []string{"vandalism"}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("non-owner tagged a shared upload, err=%v", err)
+	// Bob can see the shared upload, so he may tag it — for himself. That is not
+	// vandalism of Alice's tags, because it cannot touch them.
+	if err := st.SetComicTags(bob.ID, comic.ID, []string{"bob-tag"}); err != nil {
+		t.Fatalf("a reader should be able to tag a comic they can see: %v", err)
 	}
 	assertTags(t, st, alice.ID, comic.ID, "owner-tag")
+	assertTags(t, st, bob.ID, comic.ID, "bob-tag")
 
-	if err := st.SetComicTags(admin.ID, true, comic.ID, []string{"admin-tag"}); err != nil {
-		t.Fatalf("admin should be able to tag any comic: %v", err)
+	// The same word from two users is two private rows, not one shared one.
+	if err := st.SetComicTags(bob.ID, comic.ID, []string{"owner-tag"}); err != nil {
+		t.Fatalf("bob reuses alice's word: %v", err)
 	}
-	assertTags(t, st, alice.ID, comic.ID, "admin-tag")
+	for _, u := range []string{alice.ID, bob.ID} {
+		tags, err := st.ListTags(u)
+		if err != nil || len(tags) != 1 || tags[0].Name != "owner-tag" || tags[0].Count != 1 {
+			t.Fatalf("ListTags(%s) = %#v err=%v, want one owner-tag with count 1", u, tags, err)
+		}
+	}
+
+	// Bob clearing his tags leaves Alice's alone.
+	if err := st.SetComicTags(bob.ID, comic.ID, nil); err != nil {
+		t.Fatalf("bob clears: %v", err)
+	}
+	assertTags(t, st, alice.ID, comic.ID, "owner-tag")
+	assertTags(t, st, bob.ID, comic.ID)
 }
 
-// TestSetComicTagsOnLibraryComicIsOpen: a library comic has no uploader whose
-// opt-in could be overridden, so tagging it stays everyone's business.
+// TestSetComicTagsRequiresVisibility: visibility is the only gate on tagging,
+// so it has to actually hold.
+func TestSetComicTagsRequiresVisibility(t *testing.T) {
+	st := testStore(t)
+	alice, _ := st.CreateUser(NewID(), "alice", false)
+	bob, _ := st.CreateUser(NewID(), "bob", false)
+
+	comic := ComicRow{ID: NewID(), Path: "uploads/alice/p.cbz", Title: "P",
+		OwnerID: alice.ID, Source: SourceUpload, PageCount: 2}
+	if err := st.UpsertComic(comic); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := st.SetComicTags(bob.ID, comic.ID, []string{"nope"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tagging a private upload should fail, got %v", err)
+	}
+}
+
+// TestSetComicTagsOnLibraryComicIsOpen: a library comic is server-wide, so
+// everyone can tag it, each in their own vocabulary.
 func TestSetComicTagsOnLibraryComicIsOpen(t *testing.T) {
 	st := testStore(t)
 	bob, _ := st.CreateUser(NewID(), "bob", false)
@@ -160,7 +190,7 @@ func TestSetComicTagsOnLibraryComicIsOpen(t *testing.T) {
 	if err := st.UpsertComic(lib); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := st.SetComicTags(bob.ID, false, lib.ID, []string{"shelf"}); err != nil {
+	if err := st.SetComicTags(bob.ID, lib.ID, []string{"shelf"}); err != nil {
 		t.Fatalf("any user should be able to tag a library comic: %v", err)
 	}
 	assertTags(t, st, bob.ID, lib.ID, "shelf")

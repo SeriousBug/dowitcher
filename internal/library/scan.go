@@ -272,12 +272,16 @@ func (l *Library) record(row store.ComicRow, onDisk func(string) bool) (string, 
 	existing, err := l.st.ComicRowByPath(row.Path)
 	switch {
 	case err == nil:
-		if existing.Source != store.SourceLibrary {
+		if existing.Source == store.SourceUpload {
 			// An uploaded comic that happens to live under the root belongs to
 			// the import pipeline, which owns its row and its ownership fields.
 			// Two writers on one row would just take turns undoing each other.
 			return existing.ID, nil
 		}
+		// A claimed comic falls through: its file is under the root and this
+		// scanner is still its only writer, so it gets the same metadata refresh
+		// as any library comic. The upsert never writes owner_id or source, so
+		// refreshing it cannot un-claim it.
 		// Known path. The hash may or may not have changed; either way the
 		// upsert conflicts on path and updates in place, so the id survives and
 		// tags and progress stay attached.
@@ -290,7 +294,12 @@ func (l *Library) record(row store.ComicRow, onDisk func(string) bool) (string, 
 
 	moved, err := l.st.ComicRowByHash(row.ContentHash)
 	switch {
-	case err == nil && moved.Source == store.SourceLibrary && !onDisk(moved.Path):
+	// Claimed rows are eligible to be repointed for the same reason they are
+	// refreshed above, and for a sharper one: inserting a fresh row for a
+	// renamed claimed file would publish it to the whole server as a new
+	// library comic while the claimed row lingered, so a rename would silently
+	// undo the claim.
+	case err == nil && moved.Source != store.SourceUpload && !onDisk(moved.Path):
 		if err := l.st.MovedComic(moved.ID, row.Path, row.ModifiedAt); err != nil {
 			return "", err
 		}
