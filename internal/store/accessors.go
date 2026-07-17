@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // ErrNotFound is returned when a lookup finds no row, or when a row exists but

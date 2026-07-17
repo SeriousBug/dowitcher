@@ -98,7 +98,7 @@ export function DownloadsPage() {
 
       {usage !== null && (
         <p className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.6" })}>
-          Longbox is using {formatBytes(usage)} on this device, counting the app
+          Dowitcher is using {formatBytes(usage)} on this device, counting the app
           itself and the covers you've browsed past.
           {/* No "x of y GB free" here, and no progress bar against a quota.
               Since Chrome 133 navigator.storage.estimate().quota reports a

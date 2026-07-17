@@ -6,7 +6,7 @@ import (
 	"net/http/cookiejar"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // newClient is a second (or third) browser for the same passkey: a fresh jar

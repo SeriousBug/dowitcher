@@ -19,7 +19,7 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // thumbnailFile is the file-path form of thumbnail, for tests that need to
@@ -515,8 +515,8 @@ func TestComicInfoWritten(t *testing.T) {
 	if got.PageCount != 2 {
 		t.Errorf("PageCount = %d, want 2", got.PageCount)
 	}
-	if !strings.Contains(got.Notes, "Longbox") {
-		t.Errorf("Notes = %q, want it to mention Longbox", got.Notes)
+	if !strings.Contains(got.Notes, "Dowitcher") {
+		t.Errorf("Notes = %q, want it to mention Dowitcher", got.Notes)
 	}
 }
 

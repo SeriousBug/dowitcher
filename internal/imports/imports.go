@@ -27,7 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 var (
@@ -163,7 +163,7 @@ func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, pr
 		paths[i] = p.abs
 	}
 	if opts.Encode != "" {
-		tmp, err := os.MkdirTemp("", "longbox-import-*")
+		tmp, err := os.MkdirTemp("", "dowitcher-import-*")
 		if err != nil {
 			return nil, err
 		}

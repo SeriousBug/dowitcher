@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // InviteTTL is how long an invite link is valid. A link is a bearer token that

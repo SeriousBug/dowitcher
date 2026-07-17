@@ -16,7 +16,7 @@ import (
 	"github.com/gen2brain/webp"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 const defaultQuality = 70

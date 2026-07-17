@@ -16,11 +16,11 @@ declare global {
   interface Window {
     // Stashed by the inline listener in index.html, which is early enough to
     // catch the event; see the comment there.
-    __longboxInstallPrompt?: BeforeInstallPromptEvent;
+    __dowitcherInstallPrompt?: BeforeInstallPromptEvent;
   }
 }
 
-const DISMISSED_KEY = "longbox.install-prompt.dismissed";
+const DISMISSED_KEY = "dowitcher.install-prompt.dismissed";
 
 function isStandalone(): boolean {
   return (
@@ -98,7 +98,7 @@ function Card({ children, onDismiss }: { children: ReactNode; onDismiss: () => v
  */
 export function InstallPrompt() {
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(
-    () => window.__longboxInstallPrompt ?? null,
+    () => window.__dowitcherInstallPrompt ?? null,
   );
   const [installed, setInstalled] = useState(isStandalone);
   const [dismissed, setDismissed] = useState(() => localStorage.getItem(DISMISSED_KEY) === "1");
@@ -108,21 +108,21 @@ export function InstallPrompt() {
     // Covers the event arriving after this mounted; the inline listener in
     // index.html covers it arriving before. Between them the card cannot miss it.
     function onInstallable() {
-      setInstallEvent(window.__longboxInstallPrompt ?? null);
+      setInstallEvent(window.__dowitcherInstallPrompt ?? null);
     }
     function onInstalled() {
       setInstalled(true);
       setInstallEvent(null);
-      delete window.__longboxInstallPrompt;
+      delete window.__dowitcherInstallPrompt;
       // Installation is the strongest hint a browser weighs when deciding
       // whether to make our storage persistent, so this is the moment to ask.
       void requestPersistentStorage();
     }
 
-    window.addEventListener("longbox:installable", onInstallable);
+    window.addEventListener("dowitcher:installable", onInstallable);
     window.addEventListener("appinstalled", onInstalled);
     return () => {
-      window.removeEventListener("longbox:installable", onInstallable);
+      window.removeEventListener("dowitcher:installable", onInstallable);
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
@@ -137,7 +137,7 @@ export function InstallPrompt() {
     // The event is spent once prompted, whatever the user picks; a second
     // prompt() on it throws, so it goes from both places that hold it.
     setInstallEvent(null);
-    delete window.__longboxInstallPrompt;
+    delete window.__dowitcherInstallPrompt;
     await installEvent.prompt();
     const { outcome } = await installEvent.userChoice;
     if (outcome === "accepted") setInstalled(true);
@@ -156,7 +156,7 @@ export function InstallPrompt() {
             Offline reading is off
           </span>
           <span className={css({ fontSize: "sm", color: "textMuted" })}>
-            Browsers only allow installing and downloading over HTTPS. Longbox is being served over
+            Browsers only allow installing and downloading over HTTPS. Dowitcher is being served over
             http://{window.location.host}, so it stays online-only.
           </span>
         </div>
@@ -170,14 +170,14 @@ export function InstallPrompt() {
         <Share size={19} className={css({ flexShrink: 0, color: "accent", mt: "0.5" })} aria-hidden />
         <div className={vstack({ gap: "1", alignItems: "stretch", flex: "1", minW: "0" })}>
           <span className={css({ fontWeight: "bold", fontSize: "sm", color: "text" })}>
-            Add Longbox to your Home Screen
+            Add Dowitcher to your Home Screen
           </span>
           {/* Not a nicety on iOS: Safari erases caches and service workers after
               seven days without a visit, and a Home Screen app is the documented
               way out. Skip this and downloaded comics quietly disappear. */}
           <span className={css({ fontSize: "sm", color: "textMuted" })}>
             Tap Share, then <strong>Add to Home Screen</strong>. Safari deletes downloaded comics
-            after a week unless Longbox lives on your Home Screen.
+            after a week unless Dowitcher lives on your Home Screen.
           </span>
         </div>
       </Card>
@@ -191,7 +191,7 @@ export function InstallPrompt() {
       <div className={vstack({ gap: "2.5", alignItems: "flex-start", flex: "1", minW: "0" })}>
         <div className={vstack({ gap: "1", alignItems: "stretch" })}>
           <span className={css({ fontWeight: "bold", fontSize: "sm", color: "text" })}>
-            Install Longbox
+            Install Dowitcher
           </span>
           <span className={css({ fontSize: "sm", color: "textMuted" })}>
             Opens in its own window and keeps downloaded comics around for reading offline.

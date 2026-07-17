@@ -25,7 +25,7 @@ export function ShareSwitch({ collection }: { collection: Collection }) {
         type: "success",
         title: shared ? "Shared" : "Back to private",
         description: shared
-          ? `Everyone on this Longbox can now read ${collection.name}.`
+          ? `Everyone on this Dowitcher can now read ${collection.name}.`
           : `${collection.name} is yours alone again.`,
       });
     },

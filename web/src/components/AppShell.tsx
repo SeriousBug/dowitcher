@@ -33,7 +33,7 @@ function Wordmark() {
     <Link
       to="/"
       className={hstack({ gap: "2.5", textDecoration: "none", flexShrink: 0 })}
-      aria-label="Longbox home"
+      aria-label="Dowitcher home"
     >
       {/* The wordmark is the object the app is named after, seen end-on: a row of
           spines standing in a box, one of them pulled proud of the rest. */}
@@ -52,7 +52,7 @@ function Wordmark() {
           color: "text",
         })}
       >
-        Longbox
+        Dowitcher
       </span>
     </Link>
   );

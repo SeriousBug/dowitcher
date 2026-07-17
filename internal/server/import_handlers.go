@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/imports"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/imports"
 )
 
 const (
@@ -59,7 +59,7 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	srcDir, err := os.MkdirTemp(s.cfg.ImportTempDir, "longbox-upload-*")
+	srcDir, err := os.MkdirTemp(s.cfg.ImportTempDir, "dowitcher-upload-*")
 	if err != nil {
 		log.Printf("import temp dir: %v", err)
 		s.importer.Fail(job.ID, "the server had nowhere to put the upload")

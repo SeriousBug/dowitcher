@@ -6,7 +6,7 @@ import (
 )
 
 // DevAuthEnv names the env var that disables authentication.
-const DevAuthEnv = "LONGBOX_DEV_AUTH"
+const DevAuthEnv = "DOWITCHER_DEV_AUTH"
 
 // DevAuthRequested reports whether the bypass was asked for, regardless of
 // whether this binary can honour it.

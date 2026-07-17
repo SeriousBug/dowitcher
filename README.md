@@ -1,4 +1,4 @@
-# Longbox
+# Dowitcher
 
 A self-hosted comic reader. Point it at a folder of CBZ files and it watches them, reads them in
 the browser, and syncs your reading position across every device you open it on. It can also take a
@@ -7,7 +7,7 @@ folder of images, dedupe it, and package it into a CBZ.
 Login is passkeys only. There are no passwords to phish, reuse, or leak. The first run prints a
 one-time admin enrollment link to the logs; admins mint single-use invite links from there.
 
-Longbox ships as a single static Go binary with the web UI embedded, on a `distroless/static` base.
+Dowitcher ships as a single static Go binary with the web UI embedded, on a `distroless/static` base.
 
 ## What it does
 
@@ -38,34 +38,34 @@ stays the only one who can rename, reorder, or delete. The rule lives in SQL in 
 ## Running it
 
 ```sh
-docker run -d --name longbox \
+docker run -d --name dowitcher \
   -p 8080:8080 \
-  -v longbox-data:/data \
+  -v dowitcher-data:/data \
   -v /path/to/your/comics:/library \
-  -e LONGBOX_ORIGIN=https://longbox.example.com \
-  -e LONGBOX_RP_ID=longbox.example.com \
-  ghcr.io/seriousbug/longbox:latest
+  -e DOWITCHER_ORIGIN=https://dowitcher.example.com \
+  -e DOWITCHER_RP_ID=dowitcher.example.com \
+  ghcr.io/seriousbug/dowitcher:latest
 ```
 
 Then read the logs for the first-run enrollment link:
 
 ```sh
-docker logs longbox
+docker logs dowitcher
 ```
 
 ### Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LONGBOX_DB` | `/data/longbox.db` | SQLite database path |
-| `LONGBOX_ADDR` | `:8080` | Listen address |
-| `LONGBOX_ORIGIN` | `http://localhost:8080` | Public URL. Must match what the browser sees, or WebAuthn rejects every ceremony |
-| `LONGBOX_RP_ID` | `localhost` | WebAuthn relying party ID: the origin's hostname, no scheme, no port |
-| `LONGBOX_LIBRARY` | `/library` | Watched library root |
-| `LONGBOX_DATA` | `/data` | Working directory for uploads and imports |
-| `LONGBOX_DEV_AUTH` | unset | **Development only.** See below |
+| `DOWITCHER_DB` | `/data/dowitcher.db` | SQLite database path |
+| `DOWITCHER_ADDR` | `:8080` | Listen address |
+| `DOWITCHER_ORIGIN` | `http://localhost:8080` | Public URL. Must match what the browser sees, or WebAuthn rejects every ceremony |
+| `DOWITCHER_RP_ID` | `localhost` | WebAuthn relying party ID: the origin's hostname, no scheme, no port |
+| `DOWITCHER_LIBRARY` | `/library` | Watched library root |
+| `DOWITCHER_DATA` | `/data` | Working directory for uploads and imports |
+| `DOWITCHER_DEV_AUTH` | unset | **Development only.** See below |
 
-`LONGBOX_ORIGIN` and `LONGBOX_RP_ID` are the two that matter. Passkeys are bound to an origin, so if
+`DOWITCHER_ORIGIN` and `DOWITCHER_RP_ID` are the two that matter. Passkeys are bound to an origin, so if
 either is wrong, enrollment and login fail with errors that look like browser bugs.
 
 ### Recovery
@@ -73,8 +73,8 @@ either is wrong, enrollment and login fail with errors that look like browser bu
 If every passkey for the instance is lost, mint a fresh admin link from the host:
 
 ```sh
-docker exec longbox /longbox invite          # admin link
-docker exec longbox /longbox invite --normal # ordinary user link
+docker exec dowitcher /dowitcher invite          # admin link
+docker exec dowitcher /dowitcher invite --normal # ordinary user link
 ```
 
 Admins can also mint a recovery link for one user from the UI, which enrolls a new passkey onto that
@@ -89,10 +89,10 @@ cd web && pnpm typecheck
 cd web && pnpm build      # must run before `go build`; the binary embeds web/dist
 ```
 
-`just run` sets `LONGBOX_DEV_AUTH=dev`, which **disables authentication entirely** and treats every
+`just run` sets `DOWITCHER_DEV_AUTH=dev`, which **disables authentication entirely** and treats every
 request as an admin named `dev`. It exists so the UI can be worked on without a passkey ceremony in
-the loop. It prints a banner on every start, and Longbox refuses to boot if it is set while
-`LONGBOX_ORIGIN` is `https://` — that combination can only mean it escaped into a real deployment.
+the loop. It prints a banner on every start, and Dowitcher refuses to boot if it is set while
+`DOWITCHER_ORIGIN` is `https://` — that combination can only mean it escaped into a real deployment.
 Never set it anywhere but a local machine.
 
 ## License

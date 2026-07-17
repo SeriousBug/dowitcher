@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // TestDebounceCoalescesEventStorm is the unit form of the problem the debouncer

@@ -35,7 +35,7 @@ COPY --from=web /app/web/dist ./web/dist
 # decoder, which is what this image would fall back to anyway: there is no
 # system libavif in here to find.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -tags nodynamic -ldflags="-s -w" -o /longbox ./cmd/longbox
+    go build -trimpath -tags nodynamic -ldflags="-s -w" -o /dowitcher ./cmd/dowitcher
 # Create the data and library dirs here so they can be owned by the nonroot
 # runtime user; a mounted named volume inherits this ownership. distroless has no
 # shell, so there is no chance to mkdir at runtime.
@@ -43,10 +43,10 @@ RUN mkdir -p /data /library
 
 # --- Stage 3: tiny runtime ---
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /longbox /longbox
+COPY --from=build /dowitcher /dowitcher
 COPY --from=build --chown=65532:65532 /data /data
 COPY --from=build --chown=65532:65532 /library /library
 VOLUME ["/data", "/library"]
 EXPOSE 8080
-ENV LONGBOX_DB=/data/longbox.db LONGBOX_ADDR=:8080 LONGBOX_DATA=/data LONGBOX_LIBRARY=/library
-ENTRYPOINT ["/longbox"]
+ENV DOWITCHER_DB=/data/dowitcher.db DOWITCHER_ADDR=:8080 DOWITCHER_DATA=/data DOWITCHER_LIBRARY=/library
+ENTRYPOINT ["/dowitcher"]

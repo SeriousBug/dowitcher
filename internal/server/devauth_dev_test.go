@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // TestDevAuthBypass: with the bypass on, an unauthenticated client is the named
@@ -42,7 +42,7 @@ func TestDevAuthBypass(t *testing.T) {
 }
 
 // TestDevAuthRefusesRequestsBearingTLSEvidence is the finding itself, end to
-// end: a TLS proxy in front, LONGBOX_ORIGIN left at its http://localhost
+// end: a TLS proxy in front, DOWITCHER_ORIGIN left at its http://localhost
 // default, and the bypass on. The boot-time origin check passes because the
 // origin genuinely says http, so the only thing left to catch it is the request.
 func TestDevAuthRefusesRequestsBearingTLSEvidence(t *testing.T) {
@@ -109,7 +109,7 @@ func TestDevAuthRefusesNonLoopbackAddr(t *testing.T) {
 // production, and the process must refuse rather than serve an open library.
 func TestDevAuthRefusesHTTPSOrigin(t *testing.T) {
 	t.Setenv(auth.DevAuthEnv, "dev")
-	if _, err := auth.DevAuthFromEnv("https://longbox.example.com", "127.0.0.1:8080"); err == nil {
+	if _, err := auth.DevAuthFromEnv("https://dowitcher.example.com", "127.0.0.1:8080"); err == nil {
 		t.Fatal("dev auth on an https origin must be refused")
 	}
 	if d, err := auth.DevAuthFromEnv("http://localhost:8080", "127.0.0.1:8080"); err != nil || d == nil {

@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/cbz"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/cbz"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // ErrNotRunning means a cancel arrived for a job that no goroutine is working

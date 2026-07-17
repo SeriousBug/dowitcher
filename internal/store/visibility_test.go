@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 func updateShared(v bool) api.UpdateCollectionRequest { return api.UpdateCollectionRequest{Shared: &v} }

@@ -30,7 +30,7 @@ registerServiceWorker();
  * Registers the worker that makes the app launchable offline.
  *
  * Everything here is best-effort by design. `navigator.serviceWorker` is simply
- * absent outside a secure context, and a self-hosted Longbox on a LAN over
+ * absent outside a secure context, and a self-hosted Dowitcher on a LAN over
  * plain http is a normal way to run it — that install stays exactly as it is
  * today, online-only, with InstallPrompt explaining why rather than the feature
  * vanishing without comment.
@@ -83,7 +83,7 @@ function offerUpdate(waiting: ServiceWorker) {
 
   toaster.create({
     type: "info",
-    title: "A new version of Longbox is ready",
+    title: "A new version of Dowitcher is ready",
     // No duration: this outlives a comic, and the reader has no ToasterView, so
     // an expiring toast could tick away while nobody could have seen it.
     duration: Infinity,

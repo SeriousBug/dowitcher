@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // bombPNG builds a real PNG whose IHDR declares w by h and whose IDAT is a few

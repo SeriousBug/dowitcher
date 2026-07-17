@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/descope/virtualwebauthn"
 )
 
@@ -113,7 +113,7 @@ type passkey struct {
 
 func newPasskey(url string) *passkey {
 	return &passkey{
-		rp:   virtualwebauthn.RelyingParty{Name: "Longbox", ID: rpIDOf(url), Origin: url},
+		rp:   virtualwebauthn.RelyingParty{Name: "Dowitcher", ID: rpIDOf(url), Origin: url},
 		auth: virtualwebauthn.NewAuthenticator(),
 		cred: virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2),
 	}

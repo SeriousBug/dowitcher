@@ -1,15 +1,15 @@
-# Longbox
+# Dowitcher
 
 Self-hosted comic reader. Reads CBZ, watches a library folder, syncs reading position across
 devices, and imports a folder of images into a deduped CBZ. Passkey-only login. Ships as a
 single static Go binary with the web UI embedded (distroless/static base).
 
-`longbox` is a placeholder name. Renaming means the module path in `go.mod`, the `LONGBOX_*`
-env prefix, `cmd/longbox/`, and the cookie names — nothing structural.
+`dowitcher` is a placeholder name. Renaming means the module path in `go.mod`, the `DOWITCHER_*`
+env prefix, `cmd/dowitcher/`, and the cookie names — nothing structural.
 
 ## Stack
 
-- **Backend:** Go 1.26 (module `github.com/SeriousBug/longbox`, `internal/` packages). HTTP via
+- **Backend:** Go 1.26 (module `github.com/SeriousBug/dowitcher`, `internal/` packages). HTTP via
   the stdlib `net/http` mux with method+path patterns (e.g. `"DELETE /api/comics/{id}"`). No
   router library.
 - **Frontend:** TypeScript + React 19 SPA in `web/`. TanStack Router (code-defined) + TanStack
@@ -22,7 +22,7 @@ env prefix, `cmd/longbox/`, and the cookie names — nothing structural.
 
 ## Layout
 
-- `cmd/longbox/` — entrypoint, subcommands, background pollers.
+- `cmd/dowitcher/` — entrypoint, subcommands, background pollers.
 - `internal/api/` — shared request/response types (`types.go`). **Source of truth for TS types.**
 - `internal/server/` — HTTP handlers, routing (`server.go`), auth middleware (`middleware.go`,
   `requireAuth`/`requireAdmin`), `ws.go` hub. Handlers split per domain as `<domain>_handlers.go`.

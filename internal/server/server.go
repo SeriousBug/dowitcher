@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/auth"
-	"github.com/SeriousBug/longbox/internal/store"
-	"github.com/SeriousBug/longbox/web"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/store"
+	"github.com/SeriousBug/dowitcher/web"
 )
 
 // Config holds server-wide settings derived from env.

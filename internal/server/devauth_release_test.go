@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/auth"
 )
 
 // TestDevAuthIsNotCompiledIntoReleaseBuilds is the guard that cannot be argued
@@ -25,7 +25,7 @@ func TestDevAuthIsNotCompiledIntoReleaseBuilds(t *testing.T) {
 	for _, tc := range []struct{ origin, addr string }{
 		{"http://localhost:8080", ":8080"},        // the real finding: proxy in front, origin unset
 		{"http://localhost:8080", "127.0.0.1:80"}, // even the shape a developer would use
-		{"https://longbox.example.com", ":8080"},
+		{"https://dowitcher.example.com", ":8080"},
 	} {
 		d, err := auth.DevAuthFromEnv(tc.origin, tc.addr)
 		if err != nil {

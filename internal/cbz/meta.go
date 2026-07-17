@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // Meta is the metadata we can establish for a comic without a database.

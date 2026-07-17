@@ -13,7 +13,7 @@ function subscribe(onChange: () => void) {
 
 /** navigator.onLine is only honest about "no network at all" — a captive portal or a
  *  dead server still reads as online. That is why this says "Offline" and not
- *  "Can't reach Longbox": the stream's connection light already covers the
+ *  "Can't reach Dowitcher": the stream's connection light already covers the
  *  second case, and overclaiming here would make both untrustworthy. */
 export function useOnline(): boolean {
   return useSyncExternalStore(

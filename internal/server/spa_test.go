@@ -17,7 +17,7 @@ func TestServeSPAHeaders(t *testing.T) {
 	s := spaServer(fstest.MapFS{
 		"index.html":           {Data: []byte("<html></html>")},
 		"sw.js":                {Data: []byte("self.addEventListener('fetch',()=>{})")},
-		"manifest.webmanifest": {Data: []byte(`{"name":"Longbox"}`)},
+		"manifest.webmanifest": {Data: []byte(`{"name":"Dowitcher"}`)},
 		"assets/app-abc123.js": {Data: []byte("console.log(1)")},
 	})
 

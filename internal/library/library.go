@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // ErrScanning is returned by Scan when a scan is already in flight. Two scans
@@ -49,10 +49,10 @@ type StatusFunc func(api.LibraryStatus)
 // Config is the scanner's tuning. Every zero value is replaced with the default
 // in New, so a caller that only sets Root and DataDir gets sensible behaviour.
 type Config struct {
-	// Root is the watched library directory (LONGBOX_LIBRARY). Comic paths are
+	// Root is the watched library directory (DOWITCHER_LIBRARY). Comic paths are
 	// stored relative to it.
 	Root string
-	// DataDir is where the cover cache lives (LONGBOX_DATA).
+	// DataDir is where the cover cache lives (DOWITCHER_DATA).
 	DataDir string
 	// SweepInterval is how often the periodic sweep re-walks the root.
 	SweepInterval time.Duration

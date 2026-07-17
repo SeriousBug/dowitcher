@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/library"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/library"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // TestScannerWarmedCoverIsAHandlerCacheHit pins the two halves of the cover

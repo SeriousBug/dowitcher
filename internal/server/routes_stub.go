@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 // This file holds the seams between the auth/server foundation and the library,

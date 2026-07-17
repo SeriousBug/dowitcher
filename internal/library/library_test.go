@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // fixture builds real CBZs in the temp dir rather than copying anything from a

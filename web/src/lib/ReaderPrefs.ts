@@ -7,8 +7,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 export type FitMode = "height" | "width" | "original";
 
-const FIT_KEY = "longbox.reader.fit";
-const SPREAD_KEY = "longbox.reader.spread";
+const FIT_KEY = "dowitcher.reader.fit";
+const SPREAD_KEY = "dowitcher.reader.spread";
 
 /**
  * Reading direction is a property of the book, not the device — a manga reads
@@ -17,7 +17,7 @@ const SPREAD_KEY = "longbox.reader.spread";
  * would be a migration and an endpoint to let someone re-tick a checkbox they
  * tick once per series.
  */
-const rtlKey = (comicId: string) => `longbox.reader.rtl.${comicId}`;
+const rtlKey = (comicId: string) => `dowitcher.reader.rtl.${comicId}`;
 
 // Private-mode Safari throws on localStorage access rather than no-opping, and
 // a reader that won't open because it couldn't remember a zoom setting is a

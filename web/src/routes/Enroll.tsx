@@ -25,7 +25,7 @@ export function Enroll({ token }: { token: string }) {
       <AuthCard>
         <Header title="This link is missing its code">
           An invite link carries a code that this one doesn't have. Ask whoever
-          runs this Longbox to send you a fresh one.
+          runs this Dowitcher to send you a fresh one.
         </Header>
       </AuthCard>
     );

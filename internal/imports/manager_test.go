@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SeriousBug/longbox/internal/api"
-	"github.com/SeriousBug/longbox/internal/store"
+	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
 // recorder collects what a job pushed to the hub, and who it was addressed to.

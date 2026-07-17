@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SeriousBug/longbox/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
 var (
