@@ -12,3 +12,7 @@ web/styled-system/
 # (SQLite, cover cache, uploads, import staging).
 /library-dev/
 /data-dev/
+
+# Agent worktrees are checkouts of this repo. Committing one would nest a git
+# repo inside the repo it came from.
+/.claude/worktrees/

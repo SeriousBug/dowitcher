@@ -61,6 +61,17 @@ export function isImage(file: File): boolean {
   return file.type.startsWith("image/") || IMAGE_RE.test(file.name);
 }
 
+const CBZ_RE = /\.(cbz|zip)$/i;
+
+/**
+ * Matched on the name alone: browsers disagree about the type of a .cbz, and the
+ * ones that guess at all mostly guess "" or application/zip, which a plain zip
+ * shares. The server opens the archive before it believes any of this.
+ */
+export function isCBZ(file: File): boolean {
+  return CBZ_RE.test(file.name);
+}
+
 /**
  * Walk a dropped folder. A drop hands over FileSystemEntry objects rather than
  * Files, and the directory reader returns at most 100 entries per call, so each
@@ -89,7 +100,7 @@ async function walk(entry: FileSystemEntry, out: File[]): Promise<void> {
     const file = await new Promise<File | null>((resolve) =>
       (entry as FileSystemFileEntry).file(resolve, () => resolve(null)),
     );
-    if (file && isImage(file)) {
+    if (file && (isImage(file) || isCBZ(file))) {
       // webkitRelativePath is read-only and empty on a dropped file, so the
       // entry's full path is stashed where the uploader can find it.
       Object.defineProperty(file, "dowitcherPath", { value: entry.fullPath.replace(/^\//, "") });
