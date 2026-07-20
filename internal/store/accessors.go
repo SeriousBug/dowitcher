@@ -392,6 +392,87 @@ func (s *Store) DeleteExpiredSessions() error {
 	return err
 }
 
+// --- API tokens ---
+
+// CreateAPIToken stores a token bound to a user. tokenHash is the SHA-256 of the
+// secret, never the secret itself — the caller keeps the only copy of the plain
+// token, and the row is enough to authenticate it without being enough to forge
+// it if the database leaks.
+func (s *Store) CreateAPIToken(id, userID, name, tokenHash string) error {
+	_, err := s.db.Exec(`INSERT INTO api_tokens(id,user_id,name,token_hash,created_at)
+		VALUES(?,?,?,?,?)`, id, userID, name, tokenHash, time.Now().Unix())
+	return err
+}
+
+// APITokenUser resolves a token hash to its user and stamps last_used. Unlike a
+// session, an API token has no expiry: it lives until the user revokes it, which
+// is why it is stored hashed. Returns ErrNotFound when no token matches.
+func (s *Store) APITokenUser(tokenHash string) (api.User, error) {
+	var u api.User
+	var admin int
+	err := s.db.QueryRow(`SELECT u.id,u.name,u.is_admin,u.created_at
+		FROM api_tokens t JOIN users u ON u.id=t.user_id
+		WHERE t.token_hash=?`, tokenHash).
+		Scan(&u.ID, &u.Name, &admin, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return api.User{}, ErrNotFound
+	}
+	if err != nil {
+		return api.User{}, err
+	}
+	u.IsAdmin = admin != 0
+	// Best effort: a failed timestamp update must not fail the authentication it
+	// is only annotating.
+	s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE token_hash=?`, time.Now().Unix(), tokenHash)
+	return u, nil
+}
+
+// ListAPITokens returns a user's tokens, newest first. The secret is never
+// stored in plain and so is never returned; the row is only metadata.
+func (s *Store) ListAPITokens(userID string) ([]api.APIToken, error) {
+	rows, err := s.db.Query(`SELECT id,name,created_at,last_used FROM api_tokens
+		WHERE user_id=? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []api.APIToken{}
+	for rows.Next() {
+		var t api.APIToken
+		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsed); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUserAPITokens revokes every API token a user holds and returns how many
+// were cut. This rides along with "sign out other devices": an API token is a
+// headless session, so cutting the user's other devices has to cut the agents
+// holding a token too, or a leaked token outlives the passkey rotation meant to
+// contain it.
+func (s *Store) DeleteUserAPITokens(userID string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM api_tokens WHERE user_id=?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteAPIToken revokes a token. Scoped to the owning user so one user cannot
+// revoke another's token by guessing its id.
+func (s *Store) DeleteAPIToken(userID, id string) error {
+	res, err := s.db.Exec(`DELETE FROM api_tokens WHERE id=? AND user_id=?`, id, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- Comics ---
 
 // visibleComics returns a SQL boolean fragment, plus its args, that is true for

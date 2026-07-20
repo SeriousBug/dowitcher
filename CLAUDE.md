@@ -31,6 +31,8 @@ env prefix, `cmd/dowitcher/`, and the cookie names — nothing structural.
 - `internal/cbz/` — CBZ reading: page listing, page extraction, ComicInfo.xml, cover.
 - `internal/library/` — filesystem scanner + fsnotify watcher over the library root.
 - `internal/imports/` — the image-folder import pipeline (dedupe, sort, package).
+- `internal/mcp/` — opt-in MCP server (`DOWITCHER_MCP=1`) mounted at `/mcp`. API-token auth
+  (`auth.UserForAPIToken`), tools map onto `internal/store` so visibility stays enforced in SQL.
 - `web/src/routes/` — page components. `web/src/api/http.ts` — fetch wrapper (`http.get/post/put/del`).
   `web/src/auth/AuthProvider.tsx` — `useAuth()` gives the current `user`.
 - `web/embed.go` — embeds `web/dist` into the Go binary via `//go:embed all:dist`.

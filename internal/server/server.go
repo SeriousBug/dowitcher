@@ -10,6 +10,7 @@ import (
 
 	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/mcp"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/SeriousBug/dowitcher/web"
 )
@@ -38,6 +39,12 @@ type Config struct {
 	// DevAuth, when non-nil, resolves every gated route to one fixed user
 	// without a passkey. See auth.DevAuth — it is a development-only hole.
 	DevAuth *auth.DevAuth
+	// MCPEnabled mounts the MCP server at /mcp. Off by default: it is a headless,
+	// token-authenticated door into the library, so an operator opts in rather
+	// than having it exposed the moment they upgrade.
+	MCPEnabled bool
+	// Version is the build version reported to MCP clients.
+	Version string
 }
 
 // Server holds shared dependencies for handlers.
@@ -102,6 +109,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/me", s.requireAuth(s.handleMe))
 	s.mux.HandleFunc("DELETE /auth/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
 
+	// API tokens: a user mints one to authenticate a headless agent (the MCP
+	// server) as themselves. Bound to the caller, so gated on a session, not
+	// admin — an admin's token merely inherits the admin's own extra reach.
+	s.mux.HandleFunc("GET /api/tokens", s.requireAuth(s.handleListTokens))
+	s.mux.HandleFunc("POST /api/tokens", s.requireAuth(s.handleCreateToken))
+	s.mux.HandleFunc("DELETE /api/tokens/{id}", s.requireAuth(s.handleDeleteToken))
+
 	// Invites and users (admin).
 	s.mux.HandleFunc("GET /api/invites", s.requireAdmin(s.handleListInvites))
 	s.mux.HandleFunc("POST /api/invites", s.requireAdmin(s.handleCreateInvite))
@@ -115,6 +129,16 @@ func (s *Server) routes() {
 	// route table stays in one place.
 	s.registerLibraryRoutes()
 	s.registerImportRoutes()
+
+	// MCP server, opt-in. Mounted at both the exact path and the subtree so a
+	// client that posts to either /mcp or /mcp/ reaches it. Its own bearer-token
+	// middleware authenticates every request, so it is registered raw rather than
+	// behind requireAuth — the session cookie means nothing to a headless agent.
+	if s.cfg.MCPEnabled {
+		h := mcp.New(s.store, s.cfg.Version).Handler()
+		s.mux.Handle("/mcp", h)
+		s.mux.Handle("/mcp/", h)
+	}
 
 	// Live push.
 	s.mux.HandleFunc("GET /ws", s.handleWS)

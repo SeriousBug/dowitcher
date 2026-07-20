@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcwKey,
+  Terminal,
   Trash2,
   ShieldCheck,
   Users as UsersIcon,
@@ -19,13 +20,14 @@ import { css } from "styled-system/css";
 import { hstack, vstack } from "styled-system/patterns";
 import { Button } from "../components/Button";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { TokenCreateDialog } from "../components/TokenCreateDialog";
 import { PageHeader } from "../components/PageHeader";
 import { useAuth } from "../auth/AuthProvider";
 import { useLiveData } from "../live/LiveData";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { formatDate, formatRelative } from "../lib/format";
-import type { Invite, SignedOutOthers, User } from "../api/generated";
+import type { APIToken, Invite, SignedOutOthers, User } from "../api/generated";
 
 interface CreationOptions {
   publicKey: PublicKeyCredentialCreationOptionsJSON;
@@ -56,8 +58,15 @@ export function SettingsPage() {
   const queryClient = useQueryClient();
   const [confirmRemove, setConfirmRemove] = useState<{ id: string; name: string } | null>(null);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<User | null>(null);
+  const [confirmDeleteToken, setConfirmDeleteToken] = useState<APIToken | null>(null);
+  const [creatingToken, setCreatingToken] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [enrolling, setEnrolling] = useState(false);
+
+  const tokensQuery = useQuery({
+    queryKey: ["tokens"],
+    queryFn: () => http.get<APIToken[]>("/api/tokens"),
+  });
 
   const invitesQuery = useQuery({
     queryKey: ["invites"],
@@ -129,16 +138,18 @@ export function SettingsPage() {
   const signOutOthers = useMutation({
     mutationFn: () => http.post<SignedOutOthers>("/auth/logout/others"),
     onSuccess: ({ revoked }) => {
+      // Sign-out-others also revokes API tokens, so the list must refetch.
+      queryClient.invalidateQueries({ queryKey: ["tokens"] });
       toaster.create({
         type: "success",
         title:
           revoked === 0
             ? "Nothing else was signed in"
-            : `Signed out ${revoked} other ${revoked === 1 ? "device" : "devices"}`,
+            : `Signed out ${revoked} other ${revoked === 1 ? "session" : "sessions"}`,
         description:
           revoked === 0
-            ? "This is the only device with a live session."
-            : "Your passkeys still work — signing back in is all it takes.",
+            ? "This is the only device with a live session, and no API tokens are active."
+            : "Any connected agents were disconnected too. Your passkeys still work — signing back in is all it takes.",
       });
     },
     onError: failed("Couldn't sign out your other devices"),
@@ -190,8 +201,18 @@ export function SettingsPage() {
     onError: failed("Couldn't remove that person"),
   });
 
+  const deleteToken = useMutation({
+    mutationFn: (id: string) => http.del<{ ok: boolean }>(`/api/tokens/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tokens"] });
+      toaster.create({ type: "success", title: "Token revoked" });
+    },
+    onError: failed("Couldn't revoke that token"),
+  });
+
   const invites = invitesQuery.data ?? [];
   const users = usersQuery.data ?? [];
+  const tokens = tokensQuery.data ?? [];
 
   return (
     <div className={vstack({ gap: "8", alignItems: "stretch", maxW: "3xl" })}>
@@ -291,6 +312,51 @@ export function SettingsPage() {
             ))}
           </div>
         )}
+      </Section>
+
+      <Section
+        icon={<Terminal size={17} className={css({ color: "textMuted" })} />}
+        title="API tokens"
+        action={
+          <Button icon={<Plus size={15} />} onClick={() => setCreatingToken(true)}>
+            Create token
+          </Button>
+        }
+      >
+        <div className={vstack({ gap: "3", alignItems: "stretch" })}>
+          <p className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.6" })}>
+            Give an AI agent a token to manage your library over the MCP server. A token acts as
+            you and only sees what you can see. Signing out your other devices revokes every token.
+          </p>
+          {tokensQuery.isLoading ? (
+            <p className={css({ color: "textMuted", fontSize: "sm" })}>Looking…</p>
+          ) : tokens.length === 0 ? (
+            <p className={css({ color: "textMuted", fontSize: "sm" })}>
+              No tokens yet. Create one and hand it to your agent.
+            </p>
+          ) : (
+            <div className={vstack({ gap: "2", alignItems: "stretch" })}>
+              {tokens.map((token) => (
+                <Row
+                  key={token.id}
+                  title={token.name}
+                  subtitle={`Created ${formatDate(token.createdAt)}${
+                    token.lastUsed ? ` · last used ${formatRelative(token.lastUsed)}` : " · never used"
+                  }`}
+                >
+                  <button
+                    onClick={() => setConfirmDeleteToken(token)}
+                    aria-label={`Revoke ${token.name}`}
+                    title={`Revoke ${token.name}`}
+                    className={ICON_BUTTON}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </Row>
+              ))}
+            </div>
+          )}
+        </div>
       </Section>
 
       {user?.isAdmin && (
@@ -447,6 +513,25 @@ export function SettingsPage() {
         tone="danger"
         onConfirm={() => confirmDeleteUser && deleteUser.mutate(confirmDeleteUser)}
       />
+
+      <ConfirmDialog
+        open={confirmDeleteToken !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteToken(null);
+        }}
+        title="Revoke this token?"
+        description={
+          <>
+            Any agent using <strong>{confirmDeleteToken?.name}</strong> loses access to your
+            library immediately. This can't be undone — you'd mint a new token instead.
+          </>
+        }
+        confirmLabel="Revoke"
+        tone="danger"
+        onConfirm={() => confirmDeleteToken && deleteToken.mutate(confirmDeleteToken.id)}
+      />
+
+      <TokenCreateDialog open={creatingToken} onOpenChange={setCreatingToken} />
     </div>
   );
 }
