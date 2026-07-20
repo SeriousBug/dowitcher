@@ -75,10 +75,26 @@ docker logs dowitcher
 | `DOWITCHER_RP_ID` | `localhost` | WebAuthn relying party ID: the origin's hostname, no scheme, no port |
 | `DOWITCHER_LIBRARY` | `/library` | Watched library root |
 | `DOWITCHER_DATA` | `/data` | Working directory for uploads and imports |
+| `DOWITCHER_MCP` | unset | Set to `1` to expose the MCP server at `/mcp`. See below |
 | `DOWITCHER_DEV_AUTH` | unset | **Development only.** See below |
 
 `DOWITCHER_ORIGIN` and `DOWITCHER_RP_ID` are the two that matter. Passkeys are bound to an origin, so if
 either is wrong, enrollment and login fail with errors that look like browser bugs.
+
+### MCP server
+
+Dowitcher can expose your library as an [MCP](https://modelcontextprotocol.io) server so you can point
+an AI agent (Claude, etc.) at your instance and manage comics conversationally — "tag everything in the
+Batman collection as read", "find the comic I imported last week". It is **off by default**; set
+`DOWITCHER_MCP=1` to turn it on, and it is served at `/mcp` over streamable HTTP.
+
+Authentication is a scoped API token, not a passkey: open **Settings → API tokens**, create one, and
+hand it to your agent as a bearer credential against `https://your-instance/mcp`. A token acts as the
+user who minted it and sees exactly what that user can see; an admin's token can drive the admin-only
+tools (claiming a library comic). Signing out your other devices from Settings revokes every token too.
+
+Tools: `list_comics`, `search_comics`, `get_comic`, `list_tags`, `tag_comic`, `untag_comic`,
+`list_collections`, `create_collection`, `add_to_collection`, and `claim_comic` (admin).
 
 ### Recovery
 

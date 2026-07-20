@@ -134,7 +134,18 @@ func (s *Server) handleLogoutOthers(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	writeJSON(w, http.StatusOK, api.SignedOutOthers{Revoked: n})
+	// An API token is a headless session with no cookie to keep, so signing out
+	// other devices cuts every token too: a leaked token must not survive the
+	// rotation the user reached for to contain it. The count folds token
+	// revocations in with device ones — from the user's side both are "something
+	// else that was signed in".
+	tokens, err := s.store.DeleteUserAPITokens(u.ID)
+	if err != nil {
+		log.Printf("logout others: revoke api tokens for %s: %v", u.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, api.SignedOutOthers{Revoked: n + tokens})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
