@@ -118,8 +118,18 @@ export function ImportPage() {
 
     // Ready-made books win only when they arrived on their own. Mixed with images
     // it is an ambiguous drop, and packing the images is the thing this page is
-    // for. Several books at once is fine — they upload one after another.
+    // for. This page takes one book at a time; a batch belongs on the Library
+    // page, which uploads them one after another.
     if (books.length > 0 && images.length === 0) {
+      if (books.length > 1) {
+        toaster.create({
+          type: "error",
+          title: "One book at a time here",
+          description:
+            "To add several CBZs or PDFs at once, drag them onto the Library page instead.",
+        });
+        return;
+      }
       setReady(books);
       setFiles([]);
       return;
@@ -283,7 +293,6 @@ export function ImportPage() {
           ref={cbzInputRef}
           type="file"
           accept=".cbz,.zip,.pdf"
-          multiple
           onChange={(e) => take([...(e.target.files ?? [])])}
           className={css({ srOnly: true })}
         />
