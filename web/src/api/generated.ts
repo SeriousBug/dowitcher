@@ -79,6 +79,37 @@ export interface CreateInviteRequest {
   isAdmin: boolean;
 }
 /**
+ * APIToken is a scoped credential a user mints for a headless agent (the MCP
+ * server). It authenticates as exactly that user and inherits that user's
+ * access. The secret is shown once at creation and never stored in plain, so
+ * this metadata carries no secret — only what the UI needs to list and revoke.
+ */
+export interface APIToken {
+  id: string;
+  name: string;
+  createdAt: number /* int64 */;
+  /**
+   * LastUsed is when the token last authenticated a request, 0 if never.
+   */
+  lastUsed?: number /* int64 */;
+}
+/**
+ * CreateTokenRequest mints an API token. Name is the user's own label for which
+ * agent holds it.
+ */
+export interface CreateTokenRequest {
+  name: string;
+}
+/**
+ * CreateTokenResponse returns a freshly minted token. Secret is the plain token,
+ * returned exactly once: the server keeps only its hash, so this is the only
+ * moment it can ever be read.
+ */
+export interface CreateTokenResponse {
+  token: APIToken;
+  secret: string;
+}
+/**
  * Comic is one CBZ in the library.
  * Path is relative to the library root and is the stable identity across
  * rescans: the watcher matches on it first and falls back to content hash so a

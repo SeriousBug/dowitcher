@@ -99,11 +99,21 @@ func main() {
 		log.Fatalf("create import staging dir: %v", err)
 	}
 
+	// The MCP server is off unless explicitly enabled: it is a headless,
+	// token-authenticated entry point, so exposing it is the operator's choice
+	// rather than a default that ships turned on.
+	mcpEnabled := envBool("DOWITCHER_MCP")
+	if mcpEnabled {
+		log.Printf("MCP server enabled at /mcp — authenticate with an API token minted from Settings")
+	}
+
 	srv := server.New(st, authMgr, server.Config{
-		RPID:    rpID,
-		Origin:  origin,
-		Secure:  strings.HasPrefix(origin, "https://"),
-		DevAuth: devAuth,
+		RPID:       rpID,
+		Origin:     origin,
+		Secure:     strings.HasPrefix(origin, "https://"),
+		DevAuth:    devAuth,
+		MCPEnabled: mcpEnabled,
+		Version:    version,
 
 		LibraryRoot:   libraryRoot,
 		UploadsDir:    uploadsDir,
@@ -197,3 +207,17 @@ func env(key, def string) string {
 	}
 	return def
 }
+
+// envBool reads a boolean toggle. Anything but a clearly-true value is off, so a
+// stray "DOWITCHER_MCP=0" leaves the server closed rather than open.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// version is the build version reported to MCP clients. Overridable at build
+// time with -ldflags "-X main.version=...".
+var version = "dev"

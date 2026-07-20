@@ -145,6 +145,20 @@ var migrations = []string{
 		PRIMARY KEY (comic_id, tag_id)
 	);`,
 	`CREATE INDEX idx_comic_tags_tag ON comic_tags(tag_id);`,
+	// API tokens authenticate a headless agent (the MCP server) as one user.
+	// token_hash holds a SHA-256 of the secret, never the secret itself: a token
+	// is long-lived and higher value than a session cookie, so a leaked database
+	// must not hand over a live agent credential. The secret is high-entropy
+	// random, so an unsalted fast hash is enough — there is nothing to brute
+	// force. last_used records the most recent authentication for the UI.
+	`CREATE TABLE api_tokens (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name TEXT NOT NULL DEFAULT '',
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		last_used INTEGER NOT NULL DEFAULT 0
+	);`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is
