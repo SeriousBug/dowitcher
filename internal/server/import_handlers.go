@@ -85,6 +85,10 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		budget = DefaultMaxUploadBytes
 	}
 	files := 0
+	// A PDF is unpacked into page images and run through the same pipeline, but
+	// it is a single self-contained book: it cannot be mixed with loose images,
+	// which would be an ambiguous "which is the comic" upload.
+	pdfPath := ""
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -109,12 +113,41 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusBadRequest, "an uploaded file had an unusable name: "+part.FileName())
 			return
 		}
+		if imports.IsPDFName(rel) {
+			if files > 0 || pdfPath != "" {
+				part.Close()
+				fail(http.StatusBadRequest, "a PDF has to be uploaded on its own, not mixed with other files")
+				return
+			}
+			dst := filepath.Join(srcDir, filepath.Base(rel))
+			n, err := writeUpload(dst, part, budget)
+			part.Close()
+			if err != nil {
+				if errors.Is(err, errUploadTooBig) {
+					fail(http.StatusRequestEntityTooLarge, "this upload is larger than the server allows")
+					return
+				}
+				log.Printf("import upload %s: %v", rel, err)
+				fail(http.StatusInternalServerError, "the upload could not be written to disk")
+				return
+			}
+			budget -= n
+			pdfPath = dst
+			// The count drives the "files uploaded" spinner; a PDF is one file.
+			s.importer.Uploaded(job.ID, 1)
+			continue
+		}
 		if !imports.IsImageName(rel) {
 			// Refused rather than skipped: a folder full of files the pipeline
 			// would ignore means the wrong folder was picked, and saying so beats
 			// producing an empty comic twenty minutes later.
 			part.Close()
-			fail(http.StatusBadRequest, "only image files can be imported, got: "+rel)
+			fail(http.StatusBadRequest, "only image files or a PDF can be imported, got: "+rel)
+			return
+		}
+		if pdfPath != "" {
+			part.Close()
+			fail(http.StatusBadRequest, "a PDF has to be uploaded on its own, not mixed with other files")
 			return
 		}
 		n, err := writeUpload(filepath.Join(srcDir, filepath.FromSlash(rel)), part, budget)
@@ -132,6 +165,18 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		files++
 		s.importer.Uploaded(job.ID, files)
 	}
+
+	if pdfPath != "" {
+		if err := s.importer.StartPDF(detached(r), job.ID, pdfPath, opts); err != nil {
+			log.Printf("start pdf import %s: %v", job.ID, err)
+			fail(http.StatusInternalServerError, "the import could not be started")
+			return
+		}
+		started = true
+		writeJSON(w, http.StatusOK, job)
+		return
+	}
+
 	if files == 0 {
 		fail(http.StatusBadRequest, "no images were uploaded")
 		return
