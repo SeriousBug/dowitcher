@@ -67,7 +67,19 @@ type ManagerConfig struct {
 	// a column because it is a page of JSON that only one screen ever reads, and
 	// it must outlive the process that produced it.
 	ReportDir string
+	// ImportTempDir is where a PDF's extracted page images are staged before the
+	// pipeline runs. A folder import stages in the handler; a PDF import stages
+	// here because the extraction is the manager's own step.
+	ImportTempDir string
+	// MaxUploadBytes caps the total size of the images extracted from a PDF, the
+	// PDF-bomb guard mirroring the upload cap. 0 uses defaultMaxExtractBytes.
+	MaxUploadBytes int64
 }
+
+// defaultMaxExtractBytes caps a PDF's extracted images when MaxUploadBytes is
+// unset. It matches the server's DefaultMaxUploadBytes: an extraction should be
+// allowed to produce as much as an upload of the same content would.
+const defaultMaxExtractBytes = 8 << 30
 
 // Manager turns the pure pipeline into running jobs: it owns their goroutines,
 // their progress reporting, and the rows that say what happened.
@@ -213,6 +225,75 @@ func (m *Manager) Start(ctx context.Context, jobID, srcDir string, opts api.Impo
 	m.broadcast(snap)
 	go m.run(runCtx, snap, srcDir, opts)
 	return nil
+}
+
+// StartPDF extracts a fully uploaded PDF into a temp dir of page images, then
+// runs the same pipeline as a folder import. ctx is the detached request
+// context, so the work outlives the request.
+//
+// pdfPath is removed once its images are out; the temp dir of images is owned by
+// run, which removes it when the pipeline is done.
+func (m *Manager) StartPDF(ctx context.Context, jobID, pdfPath string, opts api.ImportOptions) error {
+	if opts.Name == "" {
+		opts.Name = pdfTitle(pdfPath)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+
+	m.mu.Lock()
+	j, ok := m.running[jobID]
+	if !ok {
+		m.mu.Unlock()
+		cancel()
+		return store.ErrNotFound
+	}
+	j.cancel = cancel
+	j.snap.Name = opts.Name
+	j.snap.Stage = api.StageExtracting
+	j.snap.Done, j.snap.Total = 0, 0
+	snap := j.snap
+	m.mu.Unlock()
+
+	m.save(snap)
+	m.broadcast(snap)
+	go m.runPDF(runCtx, snap, pdfPath, opts)
+	return nil
+}
+
+// runPDF pulls the page images out of the PDF, then hands the resulting folder
+// to the shared pipeline. The image temp dir is created here and taken over by
+// run's own cleanup; the PDF is removed as soon as its pages are extracted.
+func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
+	// The handler stages the PDF in a dedicated temp dir that holds only this
+	// file; that dir is the PDF job's to clean up now that the request has
+	// returned, so it goes when the PDF is consumed.
+	pdfDir := filepath.Dir(pdfPath)
+
+	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-pdf-*")
+	if err != nil {
+		log.Printf("import %s: pdf temp dir: %v", job.ID, err)
+		os.RemoveAll(pdfDir)
+		m.Fail(job.ID, "the server had nowhere to unpack the PDF")
+		return
+	}
+
+	budget := m.cfg.MaxUploadBytes
+	if budget <= 0 {
+		budget = defaultMaxExtractBytes
+	}
+	if _, err := ExtractPDF(ctx, pdfPath, srcDir, budget, m.progress(job.ID)); err != nil {
+		log.Printf("import %s: extract pdf: %v", job.ID, err)
+		os.RemoveAll(pdfDir)
+		os.RemoveAll(srcDir)
+		m.Fail(job.ID, failMessage(err))
+		return
+	}
+	// The PDF has served its purpose; the extracted images are what the pipeline
+	// needs from here.
+	os.RemoveAll(pdfDir)
+
+	// run owns srcDir from here, including removing it, and reports the rest of
+	// the pipeline the same way a folder import does.
+	m.run(ctx, job, srcDir, opts)
 }
 
 // Fail marks a job that died before the pipeline ever got it. Without it a
@@ -521,6 +602,10 @@ func failMessage(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):
 		return "cancelled"
+	case errors.Is(err, ErrNotPDF):
+		return "that file could not be read as a PDF"
+	case errors.Is(err, ErrPDFTooBig):
+		return "the images in that PDF are larger than the server allows"
 	case errors.Is(err, ErrNoImages):
 		return "no readable images in the upload"
 	case errors.Is(err, ErrBadEncode):
@@ -542,6 +627,18 @@ func uploadTitle(srcDir string) string {
 		return "Untitled import"
 	}
 	return entries[0].Name()
+}
+
+// pdfTitle names a PDF import after the uploaded filename, minus its extension.
+// The extracted images sit under random temp names, so uploadTitle's folder-name
+// trick does not apply — the filename is the only title the user gave.
+func pdfTitle(pdfPath string) string {
+	base := filepath.Base(pdfPath)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	if name == "" {
+		return "Untitled import"
+	}
+	return name
 }
 
 // IsImageName reports whether a filename is one the pipeline would collect. The

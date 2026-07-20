@@ -43,6 +43,9 @@ type Importer interface {
 	// Start hands a fully uploaded folder to the pipeline and returns at once.
 	// ctx is detached(r), so the import outlives the request that posted it.
 	Start(ctx context.Context, jobID, srcDir string, opts api.ImportOptions) error
+	// StartPDF extracts a fully uploaded PDF into page images and runs them
+	// through the same pipeline as a folder import. ctx is detached(r).
+	StartPDF(ctx context.Context, jobID, pdfPath string, opts api.ImportOptions) error
 	// Fail marks a job that died before the pipeline got it, which is how a
 	// broken upload stops being a spinner.
 	Fail(jobID, msg string)

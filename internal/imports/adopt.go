@@ -113,3 +113,10 @@ func IsCBZName(name string) bool {
 	}
 	return false
 }
+
+// IsPDFName reports whether a filename is a PDF the import pipeline will unpack.
+// Name-only, like IsCBZName: the extractor opens and parses the file before it
+// believes any of this.
+func IsPDFName(name string) bool {
+	return strings.ToLower(filepath.Ext(name)) == ".pdf"
+}
