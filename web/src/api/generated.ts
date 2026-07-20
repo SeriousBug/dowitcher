@@ -247,6 +247,11 @@ export interface ProgressRequest {
 export type ImportStage = string;
 export const StageUploading: ImportStage = "uploading";
 /**
+ * StageExtracting is the PDF-only phase where embedded page images are pulled
+ * out of the uploaded PDF, before the image pipeline's StageReading runs.
+ */
+export const StageExtracting: ImportStage = "extracting";
+/**
  * StageReading covers one combined pass: each image is read, hashed and
  * thumbnailed in a single decode. The pipeline does not decode twice, so
  * there is no separate thumbnailing stage to report.

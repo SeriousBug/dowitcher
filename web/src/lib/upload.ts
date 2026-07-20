@@ -72,6 +72,16 @@ export function isCBZ(file: File): boolean {
   return CBZ_RE.test(file.name);
 }
 
+const PDF_RE = /\.pdf$/i;
+
+/**
+ * Matched on the name alone, like isCBZ: the server opens and parses the PDF
+ * before it believes it is one.
+ */
+export function isPDF(file: File): boolean {
+  return PDF_RE.test(file.name);
+}
+
 /**
  * Walk a dropped folder. A drop hands over FileSystemEntry objects rather than
  * Files, and the directory reader returns at most 100 entries per call, so each
@@ -100,7 +110,7 @@ async function walk(entry: FileSystemEntry, out: File[]): Promise<void> {
     const file = await new Promise<File | null>((resolve) =>
       (entry as FileSystemFileEntry).file(resolve, () => resolve(null)),
     );
-    if (file && (isImage(file) || isCBZ(file))) {
+    if (file && (isImage(file) || isCBZ(file) || isPDF(file))) {
       // webkitRelativePath is read-only and empty on a dropped file, so the
       // entry's full path is stashed where the uploader can find it.
       Object.defineProperty(file, "dowitcherPath", { value: entry.fullPath.replace(/^\//, "") });

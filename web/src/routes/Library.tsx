@@ -7,6 +7,7 @@ import { hstack, vstack } from "styled-system/patterns";
 import { Button } from "../components/Button";
 import { ClaimButton } from "../components/ClaimButton";
 import { ComicGrid, ComicGridSkeleton, ComicTile, TileButton } from "../components/ComicGrid";
+import { DropOverlay } from "../components/DropOverlay";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TagEditorDialog } from "../components/TagEditorDialog";
@@ -138,6 +139,7 @@ export function LibraryPage() {
   const filtered = Boolean(q || tag);
 
   return (
+    <DropOverlay>
     <div className={vstack({ gap: "7", alignItems: "stretch" })}>
       <PageHeader
         eyebrow="Shelf"
@@ -378,5 +380,6 @@ export function LibraryPage() {
         }}
       />
     </div>
+    </DropOverlay>
   );
 }

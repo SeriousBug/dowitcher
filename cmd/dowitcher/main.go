@@ -122,8 +122,9 @@ func main() {
 	// running in the DB is a lie left by a crash, since its goroutine died with
 	// the process.
 	im, err := imports.NewManager(st, srv.Hub(), imports.ManagerConfig{
-		UploadsDir: uploadsDir,
-		ReportDir:  filepath.Join(dataDir, "imports"),
+		UploadsDir:    uploadsDir,
+		ReportDir:     filepath.Join(dataDir, "imports"),
+		ImportTempDir: importTempDir,
 	})
 	if err != nil {
 		log.Fatalf("import manager: %v", err)

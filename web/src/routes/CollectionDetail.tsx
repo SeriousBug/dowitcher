@@ -19,6 +19,7 @@ import { grid, hstack, vstack } from "styled-system/patterns";
 import { Button } from "../components/Button";
 import { ComicGrid, ComicGridSkeleton, ComicTile, TileButton } from "../components/ComicGrid";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DropOverlay } from "../components/DropOverlay";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { ShareSwitch } from "../components/ShareSwitch";
@@ -134,6 +135,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
   }
 
   return (
+    <DropOverlay collectionId={id} disabled={!owned}>
     <div className={vstack({ gap: "7", alignItems: "stretch" })}>
       <BackLink />
 
@@ -288,6 +290,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
         onConfirm={() => removeCollection.mutate()}
       />
     </div>
+    </DropOverlay>
   );
 }
 
