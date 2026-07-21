@@ -3,17 +3,32 @@ package store
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
-// TestAPITokenResolvesToOwner: a stored token hash authenticates as exactly the
-// user it was minted for, carrying that user's admin flag.
-func TestAPITokenResolvesToOwner(t *testing.T) {
+// oauthClient creates a registered client so access/refresh token rows have a
+// valid FK to reference.
+func oauthClient(t *testing.T, st *Store) string {
+	t.Helper()
+	id := NewID()
+	if err := st.CreateOAuthClient(id, "agent", []string{"https://example.test/cb"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	return id
+}
+
+// TestAccessTokenResolvesToOwner: a stored access-token hash authenticates as
+// exactly the user it was minted for, carrying that user's admin flag and the
+// real stored expiry.
+func TestAccessTokenResolvesToOwner(t *testing.T) {
 	st := testStore(t)
 	admin, _ := st.CreateUser(NewID(), "admin", true)
-	if err := st.CreateAPIToken(NewID(), admin.ID, "laptop", "hash-a"); err != nil {
+	client := oauthClient(t, st)
+	exp := time.Now().Add(time.Hour).Unix()
+	if err := st.CreateAccessToken("hash-a", client, admin.ID, "mcp", exp); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
-	u, err := st.APITokenUser("hash-a")
+	u, gotExp, err := st.AccessTokenUser("hash-a")
 	if err != nil {
 		t.Fatalf("resolve token: %v", err)
 	}
@@ -23,100 +38,124 @@ func TestAPITokenResolvesToOwner(t *testing.T) {
 	if !u.IsAdmin {
 		t.Errorf("admin flag lost through the token: %+v", u)
 	}
+	if gotExp != exp {
+		t.Errorf("expiry not returned truthfully: got %d, want %d", gotExp, exp)
+	}
 }
 
-// TestAPITokenUnknownHashIsNotFound: a hash nobody minted must not authenticate.
-func TestAPITokenUnknownHashIsNotFound(t *testing.T) {
+// TestAccessTokenUnknownHashIsNotFound: a hash nobody minted must not authenticate.
+func TestAccessTokenUnknownHashIsNotFound(t *testing.T) {
 	st := testStore(t)
-	if _, err := st.APITokenUser("nope"); !errors.Is(err, ErrNotFound) {
+	if _, _, err := st.AccessTokenUser("nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown token hash should be ErrNotFound, got %v", err)
 	}
 }
 
-// TestAPITokenStampsLastUsed: resolving a token records the moment for the UI.
-func TestAPITokenStampsLastUsed(t *testing.T) {
+// TestAccessTokenExpiryFilteredInSQL: an expired token does not resolve, and the
+// filter is in the WHERE rather than a check on the result — so there is no
+// window in which a caller forgets to apply it.
+func TestAccessTokenExpiryFilteredInSQL(t *testing.T) {
 	st := testStore(t)
 	alice, _ := st.CreateUser(NewID(), "alice", false)
-	if err := st.CreateAPIToken(NewID(), alice.ID, "agent", "hash-b"); err != nil {
+	client := oauthClient(t, st)
+	past := time.Now().Add(-time.Minute).Unix()
+	if err := st.CreateAccessToken("expired", client, alice.ID, "mcp", past); err != nil {
 		t.Fatalf("create token: %v", err)
 	}
-	before, _ := st.ListAPITokens(alice.ID)
-	if len(before) != 1 || before[0].LastUsed != 0 {
-		t.Fatalf("a fresh token should have last_used 0, got %+v", before)
-	}
-	if _, err := st.APITokenUser("hash-b"); err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	after, _ := st.ListAPITokens(alice.ID)
-	if after[0].LastUsed == 0 {
-		t.Errorf("last_used should be stamped after a resolve, got %+v", after[0])
+	if _, _, err := st.AccessTokenUser("expired"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired token should be ErrNotFound, got %v", err)
 	}
 }
 
-// TestListAndDeleteAPITokenScopedToUser: a user only ever sees and revokes their
-// own tokens; one user cannot delete another's by guessing its id.
-func TestListAndDeleteAPITokenScopedToUser(t *testing.T) {
+// TestConsumeAuthorizationCodeIsSingleUse: a code redeems once and is gone, so a
+// replay finds nothing.
+func TestConsumeAuthorizationCodeIsSingleUse(t *testing.T) {
 	st := testStore(t)
 	alice, _ := st.CreateUser(NewID(), "alice", false)
-	bob, _ := st.CreateUser(NewID(), "bob", false)
-	aliceTok := NewID()
-	if err := st.CreateAPIToken(aliceTok, alice.ID, "a", "hash-alice"); err != nil {
-		t.Fatalf("create alice token: %v", err)
+	client := oauthClient(t, st)
+	exp := time.Now().Add(time.Minute).Unix()
+	if err := st.CreateAuthorizationCode("code-h", client, alice.ID, "https://example.test/cb", "chal", "mcp", exp); err != nil {
+		t.Fatalf("create code: %v", err)
 	}
-	if err := st.CreateAPIToken(NewID(), bob.ID, "b", "hash-bob"); err != nil {
-		t.Fatalf("create bob token: %v", err)
+	ac, err := st.ConsumeAuthorizationCode("code-h")
+	if err != nil {
+		t.Fatalf("first consume: %v", err)
 	}
-
-	bobTokens, _ := st.ListAPITokens(bob.ID)
-	if len(bobTokens) != 1 || bobTokens[0].Name != "b" {
-		t.Errorf("bob should see only his own token, got %+v", bobTokens)
+	if ac.UserID != alice.ID || ac.ClientID != client || ac.RedirectURI != "https://example.test/cb" || ac.CodeChallenge != "chal" {
+		t.Errorf("consumed code lost a binding: %+v", ac)
 	}
-
-	// Bob cannot delete Alice's token.
-	if err := st.DeleteAPIToken(bob.ID, aliceTok); !errors.Is(err, ErrNotFound) {
-		t.Errorf("cross-user delete should miss, got %v", err)
-	}
-	if _, err := st.APITokenUser("hash-alice"); err != nil {
-		t.Errorf("alice's token must survive bob's attempt: %v", err)
-	}
-
-	// Alice can.
-	if err := st.DeleteAPIToken(alice.ID, aliceTok); err != nil {
-		t.Fatalf("owner delete: %v", err)
-	}
-	if _, err := st.APITokenUser("hash-alice"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("revoked token still authenticates: %v", err)
+	if _, err := st.ConsumeAuthorizationCode("code-h"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("replayed code should be ErrNotFound, got %v", err)
 	}
 }
 
-// TestDeleteUserAPITokensCutsEveryToken: signing out other devices has to cut
-// every token the user holds and none of anyone else's.
-func TestDeleteUserAPITokensCutsEveryToken(t *testing.T) {
+// TestConsumeExpiredAuthorizationCode: an expired code is ErrNotFound.
+func TestConsumeExpiredAuthorizationCode(t *testing.T) {
+	st := testStore(t)
+	alice, _ := st.CreateUser(NewID(), "alice", false)
+	client := oauthClient(t, st)
+	past := time.Now().Add(-time.Second).Unix()
+	if err := st.CreateAuthorizationCode("old", client, alice.ID, "https://example.test/cb", "chal", "mcp", past); err != nil {
+		t.Fatalf("create code: %v", err)
+	}
+	if _, err := st.ConsumeAuthorizationCode("old"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired code should be ErrNotFound, got %v", err)
+	}
+}
+
+// TestConsumeRefreshTokenRotates: consuming a refresh token deletes it, so a
+// replay of the same token fails — rotation on every use.
+func TestConsumeRefreshTokenRotates(t *testing.T) {
+	st := testStore(t)
+	alice, _ := st.CreateUser(NewID(), "alice", false)
+	client := oauthClient(t, st)
+	exp := time.Now().Add(time.Hour).Unix()
+	if err := st.CreateRefreshToken("rt-h", client, alice.ID, "mcp", exp); err != nil {
+		t.Fatalf("create refresh: %v", err)
+	}
+	rt, err := st.ConsumeRefreshToken("rt-h")
+	if err != nil {
+		t.Fatalf("first consume: %v", err)
+	}
+	if rt.UserID != alice.ID || rt.ClientID != client {
+		t.Errorf("consumed refresh lost a binding: %+v", rt)
+	}
+	if _, err := st.ConsumeRefreshToken("rt-h"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("replayed refresh should be ErrNotFound, got %v", err)
+	}
+}
+
+// TestDeleteUserOAuthTokensCutsAccessAndRefresh: signing out other devices cuts
+// every access and refresh token the user holds and none of anyone else's.
+func TestDeleteUserOAuthTokensCutsAccessAndRefresh(t *testing.T) {
 	st := testStore(t)
 	alice, _ := st.CreateUser(NewID(), "alice", false)
 	bob, _ := st.CreateUser(NewID(), "bob", false)
-	for _, h := range []string{"a1", "a2"} {
-		if err := st.CreateAPIToken(NewID(), alice.ID, h, h); err != nil {
-			t.Fatalf("create %s: %v", h, err)
+	client := oauthClient(t, st)
+	exp := time.Now().Add(time.Hour).Unix()
+	must := func(err error) {
+		if err != nil {
+			t.Fatalf("setup: %v", err)
 		}
 	}
-	if err := st.CreateAPIToken(NewID(), bob.ID, "b1", "b1"); err != nil {
-		t.Fatalf("create bob token: %v", err)
-	}
+	must(st.CreateAccessToken("a-access", client, alice.ID, "mcp", exp))
+	must(st.CreateRefreshToken("a-refresh", client, alice.ID, "mcp", exp))
+	must(st.CreateAccessToken("b-access", client, bob.ID, "mcp", exp))
 
-	n, err := st.DeleteUserAPITokens(alice.ID)
+	n, err := st.DeleteUserOAuthTokens(alice.ID)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("revoked count feeds the UI's total, want 2, got %d", n)
 	}
-	for _, h := range []string{"a1", "a2"} {
-		if _, err := st.APITokenUser(h); !errors.Is(err, ErrNotFound) {
-			t.Errorf("alice token %s survived: %v", h, err)
-		}
+	if _, _, err := st.AccessTokenUser("a-access"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("alice access token survived: %v", err)
 	}
-	if _, err := st.APITokenUser("b1"); err != nil {
+	if _, err := st.ConsumeRefreshToken("a-refresh"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("alice refresh token survived: %v", err)
+	}
+	if _, _, err := st.AccessTokenUser("b-access"); err != nil {
 		t.Errorf("bob's token was taken with alice's: %v", err)
 	}
 }

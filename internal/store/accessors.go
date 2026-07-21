@@ -392,85 +392,192 @@ func (s *Store) DeleteExpiredSessions() error {
 	return err
 }
 
-// --- API tokens ---
+// --- OAuth ---
 
-// CreateAPIToken stores a token bound to a user. tokenHash is the SHA-256 of the
-// secret, never the secret itself — the caller keeps the only copy of the plain
-// token, and the row is enough to authenticate it without being enough to forge
-// it if the database leaks.
-func (s *Store) CreateAPIToken(id, userID, name, tokenHash string) error {
-	_, err := s.db.Exec(`INSERT INTO api_tokens(id,user_id,name,token_hash,created_at)
-		VALUES(?,?,?,?,?)`, id, userID, name, tokenHash, time.Now().Unix())
+// OAuthClient is a dynamically-registered MCP client. RedirectURIs is the exact
+// set an authorize request is matched against — no prefix or wildcard, so a
+// mismatch is an open-redirect attempt, not a near miss.
+type OAuthClient struct {
+	ID           string
+	Name         string
+	RedirectURIs []string
+	CreatedAt    int64
+}
+
+// AuthorizationCode is a redeemed code's row, returned by ConsumeAuthorizationCode
+// so the token endpoint can re-check every binding the code carries.
+type AuthorizationCode struct {
+	ClientID      string
+	UserID        string
+	RedirectURI   string
+	CodeChallenge string
+	Scope         string
+	ExpiresAt     int64
+}
+
+// RefreshToken is a rotated refresh token's row, returned by ConsumeRefreshToken.
+type RefreshToken struct {
+	ClientID  string
+	UserID    string
+	Scope     string
+	ExpiresAt int64
+}
+
+// redirect_uris is newline-joined; a redirect URI cannot contain a newline, so
+// this round-trips losslessly without a join table.
+const redirectSep = "\n"
+
+// CreateOAuthClient stores a dynamically-registered client. The id is a random
+// token minted by the caller and handed back as the client_id.
+func (s *Store) CreateOAuthClient(id, name string, redirectURIs []string) error {
+	_, err := s.db.Exec(`INSERT INTO oauth_clients(id,name,redirect_uris,created_at)
+		VALUES(?,?,?,?)`, id, name, strings.Join(redirectURIs, redirectSep), time.Now().Unix())
 	return err
 }
 
-// APITokenUser resolves a token hash to its user and stamps last_used. Unlike a
-// session, an API token has no expiry: it lives until the user revokes it, which
-// is why it is stored hashed. Returns ErrNotFound when no token matches.
-func (s *Store) APITokenUser(tokenHash string) (api.User, error) {
-	var u api.User
-	var admin int
-	err := s.db.QueryRow(`SELECT u.id,u.name,u.is_admin,u.created_at
-		FROM api_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.token_hash=?`, tokenHash).
-		Scan(&u.ID, &u.Name, &admin, &u.CreatedAt)
+// OAuthClient looks up a registered client by id, or ErrNotFound.
+func (s *Store) OAuthClient(id string) (OAuthClient, error) {
+	var c OAuthClient
+	var uris string
+	err := s.db.QueryRow(`SELECT id,name,redirect_uris,created_at FROM oauth_clients WHERE id=?`, id).
+		Scan(&c.ID, &c.Name, &uris, &c.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return api.User{}, ErrNotFound
+		return OAuthClient{}, ErrNotFound
 	}
 	if err != nil {
-		return api.User{}, err
+		return OAuthClient{}, err
+	}
+	if uris != "" {
+		c.RedirectURIs = strings.Split(uris, redirectSep)
+	}
+	return c, nil
+}
+
+// CreateAuthorizationCode stores a hashed authorization code bound to a client,
+// user, redirect URI and PKCE challenge. All four are re-checked when the code
+// is redeemed.
+func (s *Store) CreateAuthorizationCode(codeHash, clientID, userID, redirectURI, challenge, scope string, expiresAt int64) error {
+	_, err := s.db.Exec(`INSERT INTO oauth_authorization_codes
+		(code_hash,client_id,user_id,redirect_uri,code_challenge,scope,expires_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?)`,
+		codeHash, clientID, userID, redirectURI, challenge, scope, expiresAt, time.Now().Unix())
+	return err
+}
+
+// ConsumeAuthorizationCode fetches and deletes a code in one transaction, so a
+// replay of the same code finds nothing. An expired or absent code is
+// ErrNotFound — the same reason ConsumeInvite fetch-and-deletes rather than
+// relying on RETURNING, which this codebase does not use.
+func (s *Store) ConsumeAuthorizationCode(codeHash string) (AuthorizationCode, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return AuthorizationCode{}, err
+	}
+	defer tx.Rollback()
+	var c AuthorizationCode
+	err = tx.QueryRow(`SELECT client_id,user_id,redirect_uri,code_challenge,scope,expires_at
+		FROM oauth_authorization_codes WHERE code_hash=? AND expires_at>?`,
+		codeHash, time.Now().Unix()).
+		Scan(&c.ClientID, &c.UserID, &c.RedirectURI, &c.CodeChallenge, &c.Scope, &c.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuthorizationCode{}, ErrNotFound
+	}
+	if err != nil {
+		return AuthorizationCode{}, err
+	}
+	// Delete regardless of whether the row was expired-but-present: the SELECT's
+	// expiry filter means an expired code already returned ErrNotFound above, so
+	// reaching here means a live code we are now spending.
+	if _, err := tx.Exec(`DELETE FROM oauth_authorization_codes WHERE code_hash=?`, codeHash); err != nil {
+		return AuthorizationCode{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AuthorizationCode{}, err
+	}
+	return c, nil
+}
+
+// CreateAccessToken stores a hashed access token.
+func (s *Store) CreateAccessToken(tokenHash, clientID, userID, scope string, expiresAt int64) error {
+	_, err := s.db.Exec(`INSERT INTO oauth_access_tokens(token_hash,client_id,user_id,scope,expires_at,created_at)
+		VALUES(?,?,?,?,?,?)`, tokenHash, clientID, userID, scope, expiresAt, time.Now().Unix())
+	return err
+}
+
+// AccessTokenUser resolves an access token hash to its user, with expiry in the
+// WHERE clause rather than a check on the result — the same shape as SessionUser,
+// so there is no window in which a caller forgets to apply it. The real expiry
+// is returned so the MCP bearer middleware can report it truthfully.
+func (s *Store) AccessTokenUser(tokenHash string) (u api.User, expiresAt int64, err error) {
+	var admin int
+	err = s.db.QueryRow(`SELECT u.id,u.name,u.is_admin,u.created_at,t.expires_at
+		FROM oauth_access_tokens t JOIN users u ON u.id=t.user_id
+		WHERE t.token_hash=? AND t.expires_at>?`, tokenHash, time.Now().Unix()).
+		Scan(&u.ID, &u.Name, &admin, &u.CreatedAt, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return api.User{}, 0, ErrNotFound
+	}
+	if err != nil {
+		return api.User{}, 0, err
 	}
 	u.IsAdmin = admin != 0
-	// Best effort: a failed timestamp update must not fail the authentication it
-	// is only annotating.
-	s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE token_hash=?`, time.Now().Unix(), tokenHash)
-	return u, nil
+	return u, expiresAt, nil
 }
 
-// ListAPITokens returns a user's tokens, newest first. The secret is never
-// stored in plain and so is never returned; the row is only metadata.
-func (s *Store) ListAPITokens(userID string) ([]api.APIToken, error) {
-	rows, err := s.db.Query(`SELECT id,name,created_at,last_used FROM api_tokens
-		WHERE user_id=? ORDER BY created_at DESC`, userID)
+// CreateRefreshToken stores a hashed refresh token.
+func (s *Store) CreateRefreshToken(tokenHash, clientID, userID, scope string, expiresAt int64) error {
+	_, err := s.db.Exec(`INSERT INTO oauth_refresh_tokens(token_hash,client_id,user_id,scope,expires_at,created_at)
+		VALUES(?,?,?,?,?,?)`, tokenHash, clientID, userID, scope, expiresAt, time.Now().Unix())
+	return err
+}
+
+// ConsumeRefreshToken fetches and deletes a refresh token in one transaction:
+// every use rotates the token, so the old value is spent the moment it is read
+// and a replayed refresh finds nothing. Expired or absent is ErrNotFound.
+func (s *Store) ConsumeRefreshToken(tokenHash string) (RefreshToken, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return RefreshToken{}, err
 	}
-	defer rows.Close()
-	out := []api.APIToken{}
-	for rows.Next() {
-		var t api.APIToken
-		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsed); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
+	defer tx.Rollback()
+	var t RefreshToken
+	err = tx.QueryRow(`SELECT client_id,user_id,scope,expires_at
+		FROM oauth_refresh_tokens WHERE token_hash=? AND expires_at>?`,
+		tokenHash, time.Now().Unix()).
+		Scan(&t.ClientID, &t.UserID, &t.Scope, &t.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefreshToken{}, ErrNotFound
 	}
-	return out, rows.Err()
+	if err != nil {
+		return RefreshToken{}, err
+	}
+	if _, err := tx.Exec(`DELETE FROM oauth_refresh_tokens WHERE token_hash=?`, tokenHash); err != nil {
+		return RefreshToken{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RefreshToken{}, err
+	}
+	return t, nil
 }
 
-// DeleteUserAPITokens revokes every API token a user holds and returns how many
-// were cut. This rides along with "sign out other devices": an API token is a
-// headless session, so cutting the user's other devices has to cut the agents
-// holding a token too, or a leaked token outlives the passkey rotation meant to
-// contain it.
-func (s *Store) DeleteUserAPITokens(userID string) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM api_tokens WHERE user_id=?`, userID)
+// DeleteUserOAuthTokens revokes every access and refresh token a user holds and
+// returns how many were cut. This rides along with "sign out other devices": an
+// OAuth grant is a headless session, so cutting the user's other devices has to
+// cut the agents holding a token too, or a leaked token outlives the passkey
+// rotation meant to contain it. Registered clients and unredeemed codes are
+// left — a client row is not a credential, and a code expires in a minute.
+func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
+	access, err := s.db.Exec(`DELETE FROM oauth_access_tokens WHERE user_id=?`, userID)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
-}
-
-// DeleteAPIToken revokes a token. Scoped to the owning user so one user cannot
-// revoke another's token by guessing its id.
-func (s *Store) DeleteAPIToken(userID, id string) error {
-	res, err := s.db.Exec(`DELETE FROM api_tokens WHERE id=? AND user_id=?`, id, userID)
+	refresh, err := s.db.Exec(`DELETE FROM oauth_refresh_tokens WHERE user_id=?`, userID)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	a, _ := access.RowsAffected()
+	r, _ := refresh.RowsAffected()
+	return a + r, nil
 }
 
 // --- Comics ---
