@@ -109,13 +109,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/me", s.requireAuth(s.handleMe))
 	s.mux.HandleFunc("DELETE /auth/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
 
-	// API tokens: a user mints one to authenticate a headless agent (the MCP
-	// server) as themselves. Bound to the caller, so gated on a session, not
-	// admin — an admin's token merely inherits the admin's own extra reach.
-	s.mux.HandleFunc("GET /api/tokens", s.requireAuth(s.handleListTokens))
-	s.mux.HandleFunc("POST /api/tokens", s.requireAuth(s.handleCreateToken))
-	s.mux.HandleFunc("DELETE /api/tokens/{id}", s.requireAuth(s.handleDeleteToken))
-
 	// Invites and users (admin).
 	s.mux.HandleFunc("GET /api/invites", s.requireAdmin(s.handleListInvites))
 	s.mux.HandleFunc("POST /api/invites", s.requireAdmin(s.handleCreateInvite))
@@ -134,10 +127,15 @@ func (s *Server) routes() {
 	// client that posts to either /mcp or /mcp/ reaches it. Its own bearer-token
 	// middleware authenticates every request, so it is registered raw rather than
 	// behind requireAuth — the session cookie means nothing to a headless agent.
+	// The OAuth authorization-server routes are registered alongside it so a
+	// stock instance advertises no OAuth endpoints at all. These patterns are
+	// more specific than the "/" catch-all, so Go 1.22 mux precedence gives them
+	// priority regardless of registration order.
 	if s.cfg.MCPEnabled {
-		h := mcp.New(s.store, s.cfg.Version).Handler()
+		h := mcp.New(s.store, s.cfg.Version, s.cfg.Origin).Handler()
 		s.mux.Handle("/mcp", h)
 		s.mux.Handle("/mcp/", h)
+		s.registerOAuthRoutes()
 	}
 
 	// Live push.

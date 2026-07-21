@@ -26,6 +26,15 @@ export function Login() {
       const credential = await startAuthentication({ optionsJSON: options.publicKey });
       await http.post("/auth/login/finish", credential as unknown as Record<string, unknown>);
       await refresh();
+      // An OAuth authorize request bounces an unauthenticated user here with a
+      // return_to; send them back to finish consent. It is only ever a
+      // same-origin relative /authorize path — validated on both the server that
+      // wrote it and here — so it cannot be turned into an open redirect off-site.
+      const returnTo = new URLSearchParams(window.location.search).get("return_to");
+      if (returnTo && returnTo.startsWith("/authorize")) {
+        window.location.assign(returnTo);
+        return;
+      }
       await navigate({ to: "/" });
     } catch (err) {
       // Dismissing the system passkey sheet throws NotAllowedError. That is a

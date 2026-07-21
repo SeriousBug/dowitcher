@@ -159,6 +159,62 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		last_used INTEGER NOT NULL DEFAULT 0
 	);`,
+	// The static API token is replaced by a full OAuth 2.1 authorization server:
+	// Claude's connector UI and Claude Code only speak the MCP OAuth flow and
+	// have no field for a pasted bearer, so a static token could never be added
+	// through them. The table is dropped rather than kept — OAuth is the only
+	// way into /mcp now, and a stray hash left behind would be a live credential
+	// nothing revokes.
+	`DROP TABLE api_tokens;`,
+	// A dynamically-registered OAuth client (RFC 7591 DCR). redirect_uris is
+	// newline-joined because the set is tiny and a join table would be four rows
+	// of ceremony for a value only ever read whole. No client secret column: MCP
+	// clients register as public (token_endpoint_auth_method=none) and are bound
+	// by PKCE, not a secret.
+	`CREATE TABLE oauth_clients (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		redirect_uris TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);`,
+	// An authorization code is single-use and short-lived; it is stored hashed
+	// for the same reason every other credential here is — a leaked database
+	// must not hand over a live one. code_challenge is the PKCE S256 challenge,
+	// re-checked at the token endpoint. The row is deleted on redemption (see
+	// ConsumeAuthorizationCode), so expiry is a backstop for codes never
+	// redeemed.
+	`CREATE TABLE oauth_authorization_codes (
+		code_hash TEXT PRIMARY KEY,
+		client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		redirect_uri TEXT NOT NULL,
+		code_challenge TEXT NOT NULL,
+		scope TEXT NOT NULL DEFAULT '',
+		expires_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
+	`CREATE TABLE oauth_access_tokens (
+		token_hash TEXT PRIMARY KEY,
+		client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		scope TEXT NOT NULL DEFAULT '',
+		expires_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
+	// A refresh token is rotated on every use (ConsumeRefreshToken deletes the
+	// old and a fresh pair is minted), so a replayed one finds nothing.
+	`CREATE TABLE oauth_refresh_tokens (
+		token_hash TEXT PRIMARY KEY,
+		client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		scope TEXT NOT NULL DEFAULT '',
+		expires_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
+	// Indexed on user_id because revoking a user's grants (sign out other
+	// devices) deletes by user, and that is the one non-PK access pattern.
+	`CREATE INDEX idx_oauth_access_user ON oauth_access_tokens(user_id);`,
+	`CREATE INDEX idx_oauth_refresh_user ON oauth_refresh_tokens(user_id);`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is

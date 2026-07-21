@@ -1,7 +1,9 @@
 // Package mcp exposes the library as a Model Context Protocol server so a user
 // can point a headless AI agent at their instance and manage comics
 // conversationally. It is opt-in: the operator enables it explicitly, and every
-// request authenticates with an API token that binds it to exactly one user.
+// request authenticates with an OAuth 2.1 access token that binds it to exactly
+// one user. This package is the resource-server half; the authorization server
+// (/authorize, /token, /register) lives in internal/server.
 //
 // The tools map directly onto the store layer rather than the HTTP handlers, so
 // visibility and sharing stay enforced in SQL where they already are. The one
@@ -26,47 +28,50 @@ import (
 type Server struct {
 	store   *store.Store
 	version string
+	// origin is the instance's public base URL. It builds the protected-resource
+	// metadata URL a 401 points a client at, which is what kicks off OAuth
+	// discovery.
+	origin string
 }
 
 // New returns an MCP server backed by st. version rides along in the server's
-// advertised implementation info.
-func New(st *store.Store, version string) *Server {
-	return &Server{store: st, version: version}
+// advertised implementation info; origin is the instance's public base URL,
+// used to advertise where the OAuth flow starts.
+func New(st *store.Store, version, origin string) *Server {
+	return &Server{store: st, version: version, origin: origin}
 }
 
 // Handler is the http.Handler to mount (at /mcp). It wraps the streamable-HTTP
-// MCP transport in bearer-token auth: a request without a valid API token gets
-// 401 before it reaches any tool.
+// MCP transport in bearer-token auth: a request without a valid access token
+// gets 401 before it reaches any tool. The 401 carries a WWW-Authenticate header
+// pointing at the protected-resource metadata, which is how an OAuth client
+// discovers where to authenticate.
 func (s *Server) Handler() http.Handler {
 	srv := s.build()
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-	return sdkauth.RequireBearerToken(s.verify, nil)(h)
+	opts := &sdkauth.RequireBearerTokenOptions{
+		ResourceMetadataURL: s.origin + "/.well-known/oauth-protected-resource",
+	}
+	return sdkauth.RequireBearerToken(s.verify, opts)(h)
 }
 
-// verify resolves the presented bearer token to a user. The whole api.User rides
-// in Extra so tool handlers get the admin flag without a second lookup. A token
-// that does not resolve is rejected as ErrInvalidToken, which the middleware
-// turns into a 401.
+// verify resolves the presented bearer to a user via the OAuth access-token
+// store. The whole api.User rides in Extra so tool handlers get the admin flag
+// without a second lookup. A token that does not resolve is rejected as
+// ErrInvalidToken, which the middleware turns into a 401. Expiration is the
+// token's real stored expiry: the middleware re-runs verify on every request,
+// so a revoked or expired token stops resolving on the caller's next call.
 func (s *Server) verify(_ context.Context, token string, _ *http.Request) (*sdkauth.TokenInfo, error) {
-	u, err := auth.UserForAPIToken(s.store, token)
+	u, expiresAt, err := s.store.AccessTokenUser(auth.HashToken(token))
 	if err != nil {
-		return nil, fmt.Errorf("unknown api token: %w", sdkauth.ErrInvalidToken)
+		return nil, fmt.Errorf("unknown access token: %w", sdkauth.ErrInvalidToken)
 	}
-	// A dowitcher token has no expiry — it lives until the user revokes it. The
-	// bearer middleware rejects a TokenInfo with a zero Expiration, so a far-off
-	// one stands in for "does not expire". Revocation is not deferred by this:
-	// the middleware re-runs verify on every request, so a deleted token stops
-	// resolving on the caller's next call regardless of what this says.
 	return &sdkauth.TokenInfo{
 		UserID:     u.ID,
-		Expiration: time.Now().Add(tokenSessionTTL),
+		Expiration: time.Unix(expiresAt, 0),
 		Extra:      map[string]any{userKey: u},
 	}, nil
 }
-
-// tokenSessionTTL only has to outlast a single MCP request; it is not the token
-// lifetime, which is unbounded until revocation.
-const tokenSessionTTL = time.Hour
 
 const userKey = "dowitcher_user"
 
