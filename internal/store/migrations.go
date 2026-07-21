@@ -215,6 +215,20 @@ var migrations = []string{
 	// devices) deletes by user, and that is the one non-PK access pattern.
 	`CREATE INDEX idx_oauth_access_user ON oauth_access_tokens(user_id);`,
 	`CREATE INDEX idx_oauth_refresh_user ON oauth_refresh_tokens(user_id);`,
+	// A user-set display title that wins over the one the scanner read out of the
+	// file. It is a separate column rather than an edit to `title` because the
+	// scanner rewrites `title` from ComicInfo.xml on every rescan, so an edit
+	// there would revert the moment the file was walked again — the same reason
+	// UpsertComic's ON CONFLICT leaves owner_id and source alone. Empty means "no
+	// override", so the effective title is COALESCE(NULLIF(title_override,''),title).
+	`ALTER TABLE comics ADD COLUMN title_override TEXT NOT NULL DEFAULT '';`,
+	// A collection's kind splits the one table into two user-facing concepts:
+	// 'collection' (the default) and 'readinglist'. Reading lists are ordered
+	// groups too — a comic can sit in many of either — so they share every bit of
+	// the collection machinery (ownership, sharing, ordering, covers) and differ
+	// only in which page lists them. A discriminator column keeps that one code
+	// path instead of a parallel table that would duplicate all of it.
+	`ALTER TABLE collections ADD COLUMN kind TEXT NOT NULL DEFAULT 'collection';`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is

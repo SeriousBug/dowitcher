@@ -4,6 +4,7 @@ import {
   DownloadCloud,
   FolderOpen,
   Library,
+  ListOrdered,
   Loader2,
   LogOut,
   Settings as SettingsIcon,
@@ -20,6 +21,7 @@ import { ToasterView } from "./ToasterView";
 const NAV = [
   { to: "/", label: "Library", icon: Library },
   { to: "/collections", label: "Collections", icon: FolderOpen },
+  { to: "/reading-lists", label: "Reading lists", icon: ListOrdered },
   { to: "/tags", label: "Tags", icon: TagsIcon },
   { to: "/downloads", label: "Offline", icon: DownloadCloud },
   { to: "/import", label: "Import", icon: Upload },

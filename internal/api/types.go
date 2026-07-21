@@ -154,7 +154,9 @@ type Tag struct {
 	Count int    `json:"count"`
 }
 
-// Collection is an ordered, user-owned set of comics.
+// Collection is an ordered, user-owned set of comics. Kind splits collections
+// from reading lists; both are the same shape and differ only in which page
+// lists them.
 type Collection struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -166,14 +168,20 @@ type Collection struct {
 	Shared    bool  `json:"shared"`
 	Count     int   `json:"count"`
 	CreatedAt int64 `json:"createdAt"`
-	// CoverComicID is the comic whose cover represents the collection.
+	// CoverComicID is the comic whose cover represents the collection. When the
+	// owner has not picked one, the server falls back to the first comic in the
+	// collection's order, so a non-empty collection always has a cover to show.
 	CoverComicID string `json:"coverComicId,omitempty"`
+	// Kind is "collection" or "readinglist".
+	Kind string `json:"kind"`
 }
 
 type CreateCollectionRequest struct {
 	Name    string `json:"name"`
 	Summary string `json:"summary,omitempty"`
 	Shared  bool   `json:"shared"`
+	// Kind is "collection" (the default) or "readinglist".
+	Kind string `json:"kind,omitempty"`
 }
 
 type UpdateCollectionRequest struct {
@@ -182,9 +190,17 @@ type UpdateCollectionRequest struct {
 	Shared  *bool   `json:"shared,omitempty"`
 }
 
-// CollectionComicRequest names the comic to file into a collection.
+// CollectionComicRequest names the comic to file into a collection. It doubles
+// as the set-cover request, whose only field is likewise the comic id.
 type CollectionComicRequest struct {
 	ComicID string `json:"comicId"`
+}
+
+// RenameComicRequest sets a comic's display title, overriding the one read from
+// the file. An empty title is rejected; the override is never blanked through
+// this path.
+type RenameComicRequest struct {
+	Title string `json:"title"`
 }
 
 // ReorderCollectionRequest is a collection's whole order, not a move

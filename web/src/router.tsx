@@ -93,6 +93,27 @@ const collectionRoute = createRoute({
   },
 });
 
+// Reading lists are the same components as collections, told which kind they
+// are. Separate routes so each is a URL of its own and the nav can point at it.
+const ProtectedReadingLists = protectedPage(CollectionsPage);
+const readingListsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/reading-lists",
+  component: function ReadingListsRoute() {
+    return <ProtectedReadingLists kind="readinglist" />;
+  },
+});
+
+const ProtectedReadingListDetail = protectedPage(CollectionDetailPage);
+const readingListRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/reading-lists/$id",
+  component: function ReadingListRoute() {
+    const { id } = readingListRoute.useParams();
+    return <ProtectedReadingListDetail id={id} kind="readinglist" />;
+  },
+});
+
 const ProtectedDownloads = protectedPage(DownloadsPage);
 const downloadsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -144,6 +165,8 @@ const routeTree = rootRoute.addChildren([
   comicRoute,
   collectionsRoute,
   collectionRoute,
+  readingListsRoute,
+  readingListRoute,
   downloadsRoute,
   tagsRoute,
   importRoute,
