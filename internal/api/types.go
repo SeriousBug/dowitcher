@@ -67,32 +67,6 @@ type CreateInviteRequest struct {
 	IsAdmin bool `json:"isAdmin"`
 }
 
-// APIToken is a scoped credential a user mints for a headless agent (the MCP
-// server). It authenticates as exactly that user and inherits that user's
-// access. The secret is shown once at creation and never stored in plain, so
-// this metadata carries no secret — only what the UI needs to list and revoke.
-type APIToken struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt int64  `json:"createdAt"`
-	// LastUsed is when the token last authenticated a request, 0 if never.
-	LastUsed int64 `json:"lastUsed,omitempty"`
-}
-
-// CreateTokenRequest mints an API token. Name is the user's own label for which
-// agent holds it.
-type CreateTokenRequest struct {
-	Name string `json:"name"`
-}
-
-// CreateTokenResponse returns a freshly minted token. Secret is the plain token,
-// returned exactly once: the server keeps only its hash, so this is the only
-// moment it can ever be read.
-type CreateTokenResponse struct {
-	Token  APIToken `json:"token"`
-	Secret string   `json:"secret"`
-}
-
 // Comic is one CBZ in the library.
 //
 // Path is relative to the library root and is the stable identity across

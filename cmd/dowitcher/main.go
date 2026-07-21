@@ -104,7 +104,7 @@ func main() {
 	// rather than a default that ships turned on.
 	mcpEnabled := envBool("DOWITCHER_MCP")
 	if mcpEnabled {
-		log.Printf("MCP server enabled at /mcp — authenticate with an API token minted from Settings")
+		log.Printf("MCP server enabled at /mcp — add it as a custom connector and authorize in the browser with your passkey")
 	}
 
 	srv := server.New(st, authMgr, server.Config{

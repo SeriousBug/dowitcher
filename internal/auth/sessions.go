@@ -2,7 +2,9 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"time"
 
 	"github.com/SeriousBug/dowitcher/internal/store"
@@ -28,6 +30,21 @@ func randToken(n int) string {
 		panic(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// RandToken is the exported form of randToken, for the oauth package to mint
+// codes and access/refresh tokens with the same entropy and encoding the rest
+// of the server uses for opaque credentials.
+func RandToken(n int) string { return randToken(n) }
+
+// HashToken is the one-way transform stored in the database for opaque
+// credentials (OAuth codes and tokens). The token is high-entropy random, so a
+// plain SHA-256 is enough: there is no low-entropy password to brute force, so
+// no salt or slow KDF buys anything. Storing only the hash means a leaked
+// database cannot hand over a live credential.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // NewSession creates a session for a user and returns its token.

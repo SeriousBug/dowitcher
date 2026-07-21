@@ -6,14 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/oauth"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // bearer injects a static Authorization header, standing in for an agent that
-// holds an API token.
+// holds an OAuth access token.
 type bearer struct {
 	token string
 	base  http.RoundTripper
@@ -106,7 +108,7 @@ func setup(t *testing.T) e2e {
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/alice/a.cbz", Title: "AliceOnly", Source: store.SourceUpload, OwnerID: alice.ID, PageCount: 5}))
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/bob/b.cbz", Title: "BobOnly", Source: store.SourceUpload, OwnerID: bob.ID, PageCount: 7}))
 
-	srv := httptest.NewServer(New(st, "test").Handler())
+	srv := httptest.NewServer(New(st, "test", "http://mcp.test").Handler())
 	t.Cleanup(srv.Close)
 	return e2e{store: st, url: srv.URL, aliceID: alice.ID, bobID: bob.ID}
 }
@@ -118,10 +120,18 @@ func must(t *testing.T, err error) {
 	}
 }
 
+// token mints an OAuth access token directly through the store, standing in for
+// the browser flow that would otherwise produce one. A client row is created
+// first because the access token references it by FK.
 func token(t *testing.T, st *store.Store, userID string) string {
 	t.Helper()
-	secret, _, err := auth.NewAPIToken(st, userID, "agent")
-	if err != nil {
+	clientID := store.NewID()
+	if err := st.CreateOAuthClient(clientID, "agent", []string{"https://example.test/cb"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	secret := oauth.NewToken()
+	exp := time.Now().Add(time.Hour).Unix()
+	if err := st.CreateAccessToken(auth.HashToken(secret), clientID, userID, "mcp", exp); err != nil {
 		t.Fatalf("mint token: %v", err)
 	}
 	return secret
