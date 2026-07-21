@@ -498,6 +498,52 @@ func (s *Server) handleSetTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, comic)
 }
 
+// handleRenameComic sets a comic's display title. Renaming is gated the same way
+// deleting an upload is: the owner of an upload or a claim may rename it, and an
+// admin may rename anything — including a library comic, whose title is
+// server-wide, which is why a non-owner needs the admin flag. The override
+// survives rescans because the scanner never writes title_override.
+func (s *Server) handleRenameComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+	if row.OwnerID != u.ID && !u.IsAdmin {
+		writeErr(w, http.StatusForbidden, "only the owner or an admin can rename this comic")
+		return
+	}
+	var req api.RenameComicRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeErr(w, http.StatusBadRequest, "a comic needs a title")
+		return
+	}
+	if err := s.store.RenameComic(comic.ID, title); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("rename comic %s: %v", comic.ID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	updated, err := s.store.GetComic(u.ID, comic.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 // handleDeleteComic removes an upload and its file.
 func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())

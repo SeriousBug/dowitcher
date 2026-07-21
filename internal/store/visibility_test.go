@@ -65,7 +65,7 @@ func TestVisibilityUploadIsPrivateUntilShared(t *testing.T) {
 	assertListLen(t, st, bob.ID, 1)
 
 	// A private collection does not change that.
-	col, err := st.CreateCollection(NewID(), alice.ID, "Alice's stash", "", false)
+	col, err := st.CreateCollection(NewID(), alice.ID, "Alice's stash", "", "", false)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSharedCollectionIsReadOnlyToOthers(t *testing.T) {
 	alice, _ := st.CreateUser(NewID(), "alice", true)
 	bob, _ := st.CreateUser(NewID(), "bob", false)
 
-	col, err := st.CreateCollection(NewID(), alice.ID, "Shared", "", true)
+	col, err := st.CreateCollection(NewID(), alice.ID, "Shared", "", "", true)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Library as LibraryIcon, Search, Tag as TagIcon, Upload, X } from "lucide-react";
+import { Library as LibraryIcon, Pencil, Search, Tag as TagIcon, Upload, X } from "lucide-react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { css } from "styled-system/css";
@@ -11,6 +11,7 @@ import { DropOverlay } from "../components/DropOverlay";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TagEditorDialog } from "../components/TagEditorDialog";
+import { RenameDialog } from "../components/RenameDialog";
 import { useAuth } from "../auth/AuthProvider";
 import { useLiveData } from "../live/LiveData";
 import { wsClient } from "../api/ws";
@@ -62,6 +63,13 @@ function claimable(comic: Comic, isAdmin: boolean): boolean {
   return comic.source === "library" || (comic.source === "claimed" && comic.ownedByMe);
 }
 
+// The owner of an upload or claim may rename it; an admin may rename anything,
+// including a server-wide library comic. This mirrors the server's gate, so a
+// button that shows here is a button the server will honour.
+function renamable(comic: Comic, isAdmin: boolean): boolean {
+  return comic.ownedByMe || isAdmin;
+}
+
 export function LibraryPage() {
   const { tag, q } = useSearch({ from: "/" });
   const navigate = useNavigate({ from: "/" });
@@ -72,6 +80,7 @@ export function LibraryPage() {
   const [draft, setDraft] = useState(q ?? "");
   const [sort, setSort] = useState<Sort>("added");
   const [editing, setEditing] = useState<Comic | null>(null);
+  const [renaming, setRenaming] = useState<Comic | null>(null);
 
   // Typing shouldn't fire a request per keystroke, and replace: true keeps it
   // from stacking a history entry per keystroke either.
@@ -348,6 +357,14 @@ export function LibraryPage() {
                 actions={
                   <>
                     {claimable(comic, user?.isAdmin ?? false) && <ClaimButton comic={comic} />}
+                    {renamable(comic, user?.isAdmin ?? false) && (
+                      <TileButton
+                        label={`Rename ${comicLabel(comic)}`}
+                        onClick={() => setRenaming(comic)}
+                      >
+                        <Pencil size={14} />
+                      </TileButton>
+                    )}
                     <TileButton
                       label={`Edit tags on ${comicLabel(comic)}`}
                       onClick={() => setEditing(comic)}
@@ -377,6 +394,14 @@ export function LibraryPage() {
         open={editing !== null}
         onOpenChange={(open) => {
           if (!open) setEditing(null);
+        }}
+      />
+
+      <RenameDialog
+        comic={renaming}
+        open={renaming !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenaming(null);
         }}
       />
     </div>

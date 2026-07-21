@@ -179,7 +179,9 @@ export interface Tag {
   count: number /* int */;
 }
 /**
- * Collection is an ordered, user-owned set of comics.
+ * Collection is an ordered, user-owned set of comics. Kind splits collections
+ * from reading lists; both are the same shape and differ only in which page
+ * lists them.
  */
 export interface Collection {
   id: string;
@@ -195,14 +197,24 @@ export interface Collection {
   count: number /* int */;
   createdAt: number /* int64 */;
   /**
-   * CoverComicID is the comic whose cover represents the collection.
+   * CoverComicID is the comic whose cover represents the collection. When the
+   * owner has not picked one, the server falls back to the first comic in the
+   * collection's order, so a non-empty collection always has a cover to show.
    */
   coverComicId?: string;
+  /**
+   * Kind is "collection" or "readinglist".
+   */
+  kind: string;
 }
 export interface CreateCollectionRequest {
   name: string;
   summary?: string;
   shared: boolean;
+  /**
+   * Kind is "collection" (the default) or "readinglist".
+   */
+  kind?: string;
 }
 export interface UpdateCollectionRequest {
   name?: string;
@@ -210,10 +222,19 @@ export interface UpdateCollectionRequest {
   shared?: boolean;
 }
 /**
- * CollectionComicRequest names the comic to file into a collection.
+ * CollectionComicRequest names the comic to file into a collection. It doubles
+ * as the set-cover request, whose only field is likewise the comic id.
  */
 export interface CollectionComicRequest {
   comicId: string;
+}
+/**
+ * RenameComicRequest sets a comic's display title, overriding the one read from
+ * the file. An empty title is rejected; the override is never blanked through
+ * this path.
+ */
+export interface RenameComicRequest {
+  title: string;
 }
 /**
  * ReorderCollectionRequest is a collection's whole order, not a move

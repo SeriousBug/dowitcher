@@ -76,7 +76,7 @@ func TestClaimedComicSharesLikeAnUpload(t *testing.T) {
 	if err := st.ClaimComic(admin.ID, lib.ID); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	col, err := st.CreateCollection(NewID(), admin.ID, "Picks", "", true)
+	col, err := st.CreateCollection(NewID(), admin.ID, "Picks", "", "", true)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

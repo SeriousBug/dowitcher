@@ -13,30 +13,38 @@ import { ShareSwitch } from "../components/ShareSwitch";
 import { useAuth } from "../auth/AuthProvider";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
+import { KIND_CONFIG, type CollectionKind } from "../lib/collectionKind";
 import type { Collection } from "../api/generated";
 
-export function CollectionsPage() {
+// The detail route's typed `to` cannot take a template string, so the two kinds
+// map to their literal route ids here.
+function detailTo(kind: CollectionKind) {
+  return kind === "readinglist" ? "/reading-lists/$id" : "/collections/$id";
+}
+
+export function CollectionsPage({ kind = "collection" }: { kind?: CollectionKind }) {
+  const cfg = KIND_CONFIG[kind];
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Collection | null>(null);
 
   const collectionsQuery = useQuery({
-    queryKey: ["collections"],
-    queryFn: () => http.get<Collection[]>("/api/collections"),
+    queryKey: ["collections", kind],
+    queryFn: () => http.get<Collection[]>(`/api/collections?kind=${kind}`),
   });
 
   const remove = useMutation({
     mutationFn: (collection: Collection) =>
       http.del<{ ok: boolean }>(`/api/collections/${collection.id}`),
     onSuccess: (_data, collection) => {
-      queryClient.invalidateQueries({ queryKey: ["collections"] });
+      queryClient.invalidateQueries({ queryKey: ["collections", kind] });
       toaster.create({ type: "success", title: `Deleted ${collection.name}` });
     },
     onError: (err) => {
       toaster.create({
         type: "error",
-        title: "Couldn't delete that collection",
+        title: `Couldn't delete that ${cfg.singular}`,
         description:
           err instanceof HttpError ? err.message : "Something went wrong. Please try again.",
       });
@@ -50,12 +58,16 @@ export function CollectionsPage() {
   return (
     <div className={vstack({ gap: "7", alignItems: "stretch" })}>
       <PageHeader
-        eyebrow="Dividers"
-        title="Collections"
-        subtitle="Group comics however you like. Yours stay private until you share them."
+        eyebrow={kind === "readinglist" ? "Sequences" : "Dividers"}
+        title={cfg.plural}
+        subtitle={
+          kind === "readinglist"
+            ? "Line comics up in the order you mean to read them. Yours stay private until you share them."
+            : "Group comics however you like. Yours stay private until you share them."
+        }
         actions={
           <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-            New collection
+            New {cfg.singular}
           </Button>
         }
       />
@@ -65,7 +77,7 @@ export function CollectionsPage() {
       ) : collectionsQuery.isError ? (
         <EmptyState
           icon={FolderOpen}
-          title="Couldn't load your collections"
+          title={`Couldn't load your ${cfg.plural.toLowerCase()}`}
           action={
             <Button variant="primary" onClick={() => collectionsQuery.refetch()}>
               Try again
@@ -79,37 +91,38 @@ export function CollectionsPage() {
       ) : collections.length === 0 ? (
         <EmptyState
           icon={FolderOpen}
-          title="No collections yet"
+          title={`No ${cfg.plural.toLowerCase()} yet`}
           action={
             <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-              New collection
+              New {cfg.singular}
             </Button>
           }
         >
-          A collection is a shelf within your shelf — a run of one series, a
-          reading order, whatever you want to keep together. Make one and add
-          comics to it from the library.
+          {kind === "readinglist"
+            ? "A reading list is an ordered run — a series in issue order, a crossover in the order it happened. Make one and add comics from the library."
+            : "A collection is a shelf within your shelf — a run of one series, a reading order, whatever you want to keep together. Make one and add comics to it from the library."}
         </EmptyState>
       ) : (
         <div className={vstack({ gap: "8", alignItems: "stretch" })}>
           <CollectionGroup
             title="Yours"
+            kind={kind}
             items={mine}
             onDelete={(c) => setConfirmDelete(c)}
             owned
           />
-          <CollectionGroup title="Shared with you" items={shared} />
+          <CollectionGroup title="Shared with you" kind={kind} items={shared} />
         </div>
       )}
 
-      <CreateCollectionDialog open={creating} onOpenChange={setCreating} />
+      <CreateCollectionDialog kind={kind} open={creating} onOpenChange={setCreating} />
 
       <ConfirmDialog
         open={confirmDelete !== null}
         onOpenChange={(open) => {
           if (!open) setConfirmDelete(null);
         }}
-        title="Delete this collection?"
+        title={`Delete this ${cfg.singular}?`}
         description={
           <>
             <strong>{confirmDelete?.name}</strong> goes away for good. The comics
@@ -126,11 +139,13 @@ export function CollectionsPage() {
 
 function CollectionGroup({
   title,
+  kind,
   items,
   owned = false,
   onDelete,
 }: {
   title: string;
+  kind: CollectionKind;
   items: Collection[];
   owned?: boolean;
   onDelete?: (collection: Collection) => void;
@@ -154,6 +169,7 @@ function CollectionGroup({
           <CollectionCard
             key={collection.id}
             collection={collection}
+            kind={kind}
             owned={owned}
             onDelete={onDelete}
           />
@@ -175,10 +191,12 @@ function CollectionGroup({
  */
 function CollectionCard({
   collection,
+  kind,
   owned,
   onDelete,
 }: {
   collection: Collection;
+  kind: CollectionKind;
   owned: boolean;
   onDelete?: (collection: Collection) => void;
 }) {
@@ -199,7 +217,7 @@ function CollectionCard({
       })}
     >
       <Link
-        to="/collections/$id"
+        to={detailTo(kind)}
         params={{ id: collection.id }}
         className={hstack({
           gap: "4",
@@ -297,12 +315,15 @@ function CollectionCard({
 }
 
 function CreateCollectionDialog({
+  kind,
   open,
   onOpenChange,
 }: {
+  kind: CollectionKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const cfg = KIND_CONFIG[kind];
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [summary, setSummary] = useState("");
@@ -314,9 +335,10 @@ function CreateCollectionDialog({
         name: name.trim(),
         summary: summary.trim() || undefined,
         shared,
+        kind,
       }),
     onSuccess: (collection) => {
-      queryClient.invalidateQueries({ queryKey: ["collections"] });
+      queryClient.invalidateQueries({ queryKey: ["collections", kind] });
       toaster.create({ type: "success", title: `Made ${collection.name}` });
       onOpenChange(false);
       setName("");
@@ -326,7 +348,7 @@ function CreateCollectionDialog({
     onError: (err) => {
       toaster.create({
         type: "error",
-        title: "Couldn't make that collection",
+        title: `Couldn't make that ${cfg.singular}`,
         description:
           err instanceof HttpError ? err.message : "Something went wrong. Please try again.",
       });
@@ -371,7 +393,7 @@ function CreateCollectionDialog({
             })}
           >
             <Dialog.Title className={css({ fontSize: "xl", fontWeight: "bold", color: "text" })}>
-              New collection
+              New {cfg.singular}
             </Dialog.Title>
 
             <label className={vstack({ gap: "1.5", alignItems: "stretch" })}>
@@ -381,7 +403,7 @@ function CreateCollectionDialog({
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Saga, or Tuesday night reading"
+                placeholder={kind === "readinglist" ? "Saga, in order" : "Saga, or Tuesday night reading"}
                 autoFocus
                 className={FIELD}
               />
