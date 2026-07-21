@@ -30,6 +30,14 @@ func main() {
 	addr := env("DOWITCHER_ADDR", ":8080")
 	origin := env("DOWITCHER_ORIGIN", "http://localhost:8080")
 	rpID := env("DOWITCHER_RP_ID", "localhost")
+	// The library root is treated as READ-ONLY throughout: dowitcher only ever
+	// reads files under it and never creates, renames, or deletes anything there.
+	// A user's comic collection is theirs to organise, and mounting it read-only
+	// is a supported (and common) setup. Anything dowitcher produces from library
+	// content — cover thumbnails, and the CBZs converted from dropped PDFs — is
+	// written under dataDir instead. If you are about to write to libraryRoot,
+	// don't: send it to dataDir and, if it needs to be server-wide, file it with
+	// store.SourceLibraryPDF the way internal/imports.runLibraryPDF does.
 	libraryRoot := env("DOWITCHER_LIBRARY", "/library")
 	dataDir := env("DOWITCHER_DATA", "/data")
 

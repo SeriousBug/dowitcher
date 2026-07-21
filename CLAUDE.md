@@ -92,6 +92,14 @@ flag is on, or if it came from the watched library root (which is server-wide by
 Collections are private by default and the owner opts in per collection. Visibility is enforced
 in SQL in the store layer, not in handlers — see `store.visibleComics`.
 
+**The library root (`DOWITCHER_LIBRARY`) is read-only.** dowitcher only ever reads under it and
+never creates, renames, or deletes anything there — a user's collection is theirs to organise and
+mounting it read-only is supported. Everything dowitcher derives from library content goes under
+`DOWITCHER_DATA` instead: cover thumbnails, and the CBZs converted from PDFs dropped in the folder.
+A dropped PDF becomes a `source='library-pdf'` comic — server-wide like a `library` comic, but its
+CBZ lives in the uploads (data) dir and the scanner does not manage it (`imports.runLibraryPDF`).
+The source PDF is left in place, so that conversion dedupes by content hash, not by deleting it.
+
 `comics.source` is what decides server-wide, not a NULL `owner_id`: an admin can **claim** a
 library comic (`POST /api/comics/{id}/claim`), which sets `owner_id` and flips the source from
 `library` to `claimed`. A claimed comic drops out of the `source='library'` arm and so is
