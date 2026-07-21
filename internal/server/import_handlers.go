@@ -52,7 +52,7 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		// been read, is the whole reason the cap lives in Begin.
 		if errors.Is(err, imports.ErrTooManyImports) {
 			writeErr(w, http.StatusTooManyRequests,
-				"you already have an import running; wait for it to finish before starting another")
+				"you have too many imports queued; wait for some to finish before starting more")
 			return
 		}
 		log.Printf("begin import: %v", err)
@@ -259,7 +259,15 @@ func (s *Server) handleCancelImport(w http.ResponseWriter, r *http.Request) {
 	if !s.needImporter(w) {
 		return
 	}
-	err := s.importer.Cancel(u.ID, r.PathValue("id"))
+	// An admin may cancel any job, including an ownerless library-pdf one; a
+	// non-admin may only cancel their own, and CancelAny would skip the ownership
+	// check that keeps one user out of another's imports.
+	var err error
+	if u.IsAdmin {
+		err = s.importer.CancelAny(r.PathValue("id"))
+	} else {
+		err = s.importer.Cancel(u.ID, r.PathValue("id"))
+	}
 	switch {
 	case err == nil:
 		writeOK(w)
@@ -274,6 +282,63 @@ func (s *Server) handleCancelImport(w http.ResponseWriter, r *http.Request) {
 		log.Printf("cancel import: %v", err)
 		writeErr(w, http.StatusInternalServerError, "db error")
 	}
+}
+
+func (s *Server) handlePauseQueue(w http.ResponseWriter, r *http.Request) {
+	if !s.needImporter(w) {
+		return
+	}
+	if err := s.importer.Pause(); err != nil {
+		log.Printf("pause queue: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeOK(w)
+}
+
+func (s *Server) handleResumeQueue(w http.ResponseWriter, r *http.Request) {
+	if !s.needImporter(w) {
+		return
+	}
+	if err := s.importer.Resume(); err != nil {
+		log.Printf("resume queue: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeOK(w)
+}
+
+func (s *Server) handleReorderQueue(w http.ResponseWriter, r *http.Request) {
+	if !s.needImporter(w) {
+		return
+	}
+	var req api.ReorderQueueRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxOptionsBytes)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "expected a JSON body with jobIds")
+		return
+	}
+	if err := s.importer.Reorder(req.JobIDs); err != nil {
+		log.Printf("reorder queue: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeOK(w)
+}
+
+func (s *Server) handleClearFinishedImports(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	// An admin clears every finished job (including ownerless ones); a non-admin
+	// clears only their own.
+	if err := s.store.DeleteFinishedImportJobs(u.ID, u.IsAdmin); err != nil {
+		log.Printf("clear finished imports: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	// A deletion is not a per-job event the WS pushes, so a still-connected client
+	// would keep showing the cleared jobs until it reconnected. Push a fresh
+	// snapshot to the caller's sockets so they drop out now.
+	s.hub.BroadcastTo(u.ID, api.WSMessage{Type: api.WSTypeJobs, Jobs: s.jobSnapshot(u.ID, u.IsAdmin)})
+	writeOK(w)
 }
 
 // handleImportDupes returns the merge report, which is the only place a user can

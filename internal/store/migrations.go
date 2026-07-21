@@ -229,6 +229,45 @@ var migrations = []string{
 	// only in which page lists them. A discriminator column keeps that one code
 	// path instead of a parallel table that would duplicate all of it.
 	`ALTER TABLE collections ADD COLUMN kind TEXT NOT NULL DEFAULT 'collection';`,
+	// Import jobs gain a queue. The scheduler drains a server-wide queue with N
+	// workers instead of running every upload on submit, and a PDF dropped in the
+	// library folder is converted through the same queue as an ownerless job —
+	// which needs owner_id to be nullable. SQLite cannot relax a NOT NULL
+	// constraint in place, so the table is rebuilt. This is safe because nothing
+	// references import_jobs (comic_id points *out* to comics; no FK points in),
+	// and the whole batch runs in migrate()'s single transaction.
+	//
+	//   - kind tells the worker how to process a job and how restart resumes it:
+	//     'folder' (images), 'pdf' (uploaded PDF), 'library-pdf' (folder-dropped).
+	//   - input_path is the staged folder or source PDF; server-only, never sent.
+	//   - queue_seq orders the queue; the lowest unfinished seq is dequeued next.
+	//   - options is the api.ImportOptions JSON a restart re-enqueues with.
+	`CREATE TABLE import_jobs_v2 (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+		stage TEXT NOT NULL DEFAULT '',
+		done INTEGER NOT NULL DEFAULT 0,
+		total INTEGER NOT NULL DEFAULT 0,
+		source_count INTEGER NOT NULL DEFAULT 0,
+		page_count INTEGER NOT NULL DEFAULT 0,
+		exact_dupes INTEGER NOT NULL DEFAULT 0,
+		near_dupes INTEGER NOT NULL DEFAULT 0,
+		message TEXT NOT NULL DEFAULT '',
+		comic_id TEXT REFERENCES comics(id) ON DELETE SET NULL,
+		started_at INTEGER NOT NULL,
+		finished_at INTEGER NOT NULL DEFAULT 0,
+		kind TEXT NOT NULL DEFAULT 'folder',
+		input_path TEXT NOT NULL DEFAULT '',
+		queue_seq INTEGER NOT NULL DEFAULT 0,
+		options TEXT NOT NULL DEFAULT ''
+	);`,
+	`INSERT INTO import_jobs_v2 (id,name,owner_id,stage,done,total,source_count,page_count,
+		exact_dupes,near_dupes,message,comic_id,started_at,finished_at)
+		SELECT id,name,owner_id,stage,done,total,source_count,page_count,
+		exact_dupes,near_dupes,message,comic_id,started_at,finished_at FROM import_jobs;`,
+	`DROP TABLE import_jobs;`,
+	`ALTER TABLE import_jobs_v2 RENAME TO import_jobs;`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is
