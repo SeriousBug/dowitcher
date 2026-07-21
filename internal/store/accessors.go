@@ -1414,23 +1414,143 @@ func (s *Store) ListProgress(userID string) ([]api.Progress, error) {
 // --- Import jobs ---
 
 const jobCols = `id,name,owner_id,stage,done,total,source_count,page_count,exact_dupes,near_dupes,
-	message,comic_id,started_at,finished_at`
+	message,comic_id,started_at,finished_at,kind,queue_seq`
 
-// SaveImportJob upserts a job row.
+// SaveImportJob upserts a job row. input_path and options are left untouched:
+// they are written once by SetImportJobInput and are not part of this shape, so
+// the ON CONFLICT update cannot blank them when a running job saves a progress
+// snapshot.
 func (s *Store) SaveImportJob(j api.ImportJob) error {
 	var comicID any
 	if j.ComicID != "" {
 		comicID = j.ComicID
 	}
+	// A library-pdf job has no owner: owner_id is nullable now, so an empty
+	// OwnerID must land as NULL rather than a foreign key to a user id of "".
+	var owner any
+	if j.OwnerID != "" {
+		owner = j.OwnerID
+	}
 	_, err := s.db.Exec(`INSERT INTO import_jobs(`+jobCols+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, stage=excluded.stage, done=excluded.done, total=excluded.total,
 			source_count=excluded.source_count, page_count=excluded.page_count,
 			exact_dupes=excluded.exact_dupes, near_dupes=excluded.near_dupes,
-			message=excluded.message, comic_id=excluded.comic_id, finished_at=excluded.finished_at`,
-		j.ID, j.Name, j.OwnerID, string(j.Stage), j.Done, j.Total, j.SourceCount, j.PageCount,
-		j.ExactDupes, j.NearDupes, j.Message, comicID, j.StartedAt, j.FinishedAt)
+			message=excluded.message, comic_id=excluded.comic_id, finished_at=excluded.finished_at,
+			kind=excluded.kind, queue_seq=excluded.queue_seq`,
+		j.ID, j.Name, owner, string(j.Stage), j.Done, j.Total, j.SourceCount, j.PageCount,
+		j.ExactDupes, j.NearDupes, j.Message, comicID, j.StartedAt, j.FinishedAt, j.Kind, j.QueueSeq)
+	return err
+}
+
+// SetImportJobInput records the staged input and the options JSON a job runs
+// with. These are server-only columns — they carry temp paths — so they are
+// written through their own method rather than riding on the api.ImportJob shape
+// the client sees.
+func (s *Store) SetImportJobInput(id, inputPath, optionsJSON string) error {
+	_, err := s.db.Exec(`UPDATE import_jobs SET input_path=?, options=? WHERE id=?`,
+		inputPath, optionsJSON, id)
+	return err
+}
+
+// RecoverableJob is an unfinished job plus the server-only fields a restart
+// needs to re-enqueue it: where its input is staged and the options to run with.
+type RecoverableJob struct {
+	Job       api.ImportJob
+	InputPath string
+	Options   string
+}
+
+// ListRecoverableImportJobs returns every unfinished job with its staged input
+// and options, for restart recovery to decide which can resume and which are
+// lost. It replaces the read side of the old recover() sweep.
+func (s *Store) ListRecoverableImportJobs() ([]RecoverableJob, error) {
+	rows, err := s.db.Query(`SELECT ` + jobCols + `,input_path,options FROM import_jobs WHERE finished_at=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecoverableJob
+	for rows.Next() {
+		var r RecoverableJob
+		if err := scanJobInto(rows, &r.Job, &r.InputPath, &r.Options); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListAllImportJobs returns every job across all owners, newest first, capped at
+// limit. Admin-only snapshot: it includes ownerless library-pdf jobs, which no
+// per-user query returns.
+func (s *Store) ListAllImportJobs(limit int) ([]api.ImportJob, error) {
+	rows, err := s.db.Query(`SELECT `+jobCols+` FROM import_jobs ORDER BY started_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanJobs(rows)
+}
+
+// DeleteFinishedImportJobs removes a user's finished jobs. all clears every
+// finished job regardless of owner (including ownerless library-pdf jobs), for
+// an admin.
+func (s *Store) DeleteFinishedImportJobs(ownerID string, all bool) error {
+	if all {
+		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0`)
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`, ownerID)
+	return err
+}
+
+// HasUnfinishedImportJobForInput reports whether any unfinished job is already
+// staged from inputPath. It is the manager's cross-restart dedup for a
+// folder-dropped PDF: the recovery pass and the library scan can both reach the
+// same file before either has populated the live map, so the DB is the shared
+// ground truth that keeps it from being queued twice.
+func (s *Store) HasUnfinishedImportJobForInput(inputPath string) (bool, error) {
+	if inputPath == "" {
+		return false, nil
+	}
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM import_jobs WHERE finished_at=0 AND input_path=? LIMIT 1`, inputPath).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MaxImportQueueSeq returns the highest queue_seq in use, so the manager can
+// seed its monotonic counter past every row a restart recovers. 0 when empty.
+func (s *Store) MaxImportQueueSeq() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(queue_seq),0) FROM import_jobs`).Scan(&n)
+	return n, err
+}
+
+// QueuePaused reports whether the import queue is paused. The flag lives in the
+// meta table because it is one server-wide boolean, not worth a migration.
+func (s *Store) QueuePaused() (bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key='queue_paused'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return v == "1", nil
+}
+
+// SetQueuePaused persists the queue's paused flag.
+func (s *Store) SetQueuePaused(paused bool) error {
+	_, err := s.db.Exec(`INSERT INTO meta(key,value) VALUES('queue_paused',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, boolInt(paused))
 	return err
 }
 
@@ -1476,16 +1596,46 @@ func scanJobs(rows *sql.Rows) ([]api.ImportJob, error) {
 	out := []api.ImportJob{}
 	for rows.Next() {
 		var j api.ImportJob
-		var stage string
-		var comicID sql.NullString
-		if err := rows.Scan(&j.ID, &j.Name, &j.OwnerID, &stage, &j.Done, &j.Total,
-			&j.SourceCount, &j.PageCount, &j.ExactDupes, &j.NearDupes, &j.Message,
-			&comicID, &j.StartedAt, &j.FinishedAt); err != nil {
+		if err := scanJobInto(rows, &j); err != nil {
 			return nil, err
 		}
-		j.Stage = api.ImportStage(stage)
-		j.ComicID = comicID.String
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// scanJobInto scans one jobCols row into j. extra receives any trailing columns
+// a caller selected past jobCols (input_path, options for recovery), in order.
+func scanJobInto(rows *sql.Rows, j *api.ImportJob, extra ...any) error {
+	var stage string
+	var comicID, owner sql.NullString
+	dst := []any{&j.ID, &j.Name, &owner, &stage, &j.Done, &j.Total,
+		&j.SourceCount, &j.PageCount, &j.ExactDupes, &j.NearDupes, &j.Message,
+		&comicID, &j.StartedAt, &j.FinishedAt, &j.Kind, &j.QueueSeq}
+	dst = append(dst, extra...)
+	if err := rows.Scan(dst...); err != nil {
+		return err
+	}
+	j.Stage = api.ImportStage(stage)
+	j.ComicID = comicID.String
+	j.OwnerID = owner.String
+	return nil
+}
+
+// ReorderImportJobs rewrites queue_seq densely from the given ordered id list,
+// mirroring ReorderCollection: the full list keeps the stored positions dense
+// and makes the operation idempotent. seqBase is the first sequence to assign,
+// so a reorder can be pushed past whatever seq the running jobs already hold.
+func (s *Store) ReorderImportJobs(ids []string, seqBase int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		if _, err := tx.Exec(`UPDATE import_jobs SET queue_seq=? WHERE id=?`, seqBase+int64(i), id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

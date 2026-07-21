@@ -36,6 +36,11 @@ type wsClient struct {
 	// stopped reading is noticed rather than accumulating memory forever.
 	send   chan []byte
 	userID string
+	// isAdmin gates the admin-wide job fan-out. An admin's socket additionally
+	// receives every job, including the ownerless library-pdf ones no per-user
+	// query returns, so the Import page's queue is complete for whoever may
+	// manage it.
+	isAdmin bool
 }
 
 func newHub() *Hub {
@@ -113,6 +118,36 @@ func (h *Hub) BroadcastTo(userID string, msg api.WSMessage) {
 	}
 }
 
+// BroadcastToAdmins sends a message to every admin's connected sockets, skipping
+// everyone else. It is how an ownerless import job — one that belongs to the
+// server, not a user — reaches the people who may manage it.
+//
+// Like BroadcastTo it marshals once, snapshots the client set under the lock and
+// sends non-blocking, and like BroadcastTo it never touches the replay cache:
+// job payloads are events, and the admin set is not "everyone", so a cached
+// admin frame would leak to the next non-admin to connect.
+func (h *Hub) BroadcastToAdmins(msg api.WSMessage) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	clients := make([]*wsClient, 0, len(h.clients))
+	for c := range h.clients {
+		if !c.isAdmin {
+			continue
+		}
+		clients = append(clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		select {
+		case c.send <- data:
+		default:
+		}
+	}
+}
+
 // cacheable reports whether a broadcast may be replayed to a client that
 // connects later.
 //
@@ -122,7 +157,11 @@ func (h *Hub) BroadcastTo(userID string, msg api.WSMessage) {
 // passes. A job event describes a moment and would be a lie once replayed, and
 // anything filtered by visibility would be a leak — there is deliberately no
 // entry here for api.WSTypeComics, and its declaration says why.
-func cacheable(t api.WSType) bool { return t == api.WSTypeLibrary }
+//
+// WSTypeQueue is cacheable: the paused flag is one server-wide boolean,
+// identical for every user, so replaying the last value to a new socket is
+// exactly right. The job types stay uncacheable — they are per-user events.
+func cacheable(t api.WSType) bool { return t == api.WSTypeLibrary || t == api.WSTypeQueue }
 
 func (h *Hub) add(c *wsClient) {
 	h.mu.Lock()
@@ -155,7 +194,23 @@ func (h *Hub) remove(c *wsClient) {
 // for an import that finished, or died with the process, while it was
 // disconnected. With a delta the spinner would outlive the job forever.
 func (s *Server) replayJobs(c *wsClient) {
-	data, err := json.Marshal(api.WSMessage{Type: api.WSTypeJobs, Jobs: s.jobSnapshot(c.userID)})
+	// An admin's snapshot is the admin-wide set — every job, including ownerless
+	// library-pdf ones — built here per connection because it must never enter the
+	// shared replay cache that would hand it to the next non-admin to connect.
+	data, err := json.Marshal(api.WSMessage{Type: api.WSTypeJobs, Jobs: s.jobSnapshot(c.userID, c.isAdmin)})
+	if err != nil {
+		return
+	}
+	select {
+	case c.send <- data:
+	default:
+	}
+}
+
+// replayQueue seeds the queue's paused flag on connect. It is server-wide state,
+// so unlike the job snapshot it is the same for every client.
+func (s *Server) replayQueue(c *wsClient) {
+	data, err := json.Marshal(api.WSMessage{Type: api.WSTypeQueue, Queue: &api.QueueState{Paused: s.queuePaused()}})
 	if err != nil {
 		return
 	}
@@ -184,13 +239,15 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 
-	client := &wsClient{send: make(chan []byte, 32), userID: u.user.ID}
+	client := &wsClient{send: make(chan []byte, 32), userID: u.user.ID, isAdmin: u.user.IsAdmin}
 	s.hub.add(client)
 	defer s.hub.remove(client)
 	// A page loaded in the middle of an import would otherwise show nothing
 	// until the next progress message, and nothing at all if the import is
-	// stuck.
+	// stuck. The queue's paused flag comes from the cache via add, but seeding it
+	// here too keeps a fresh instance (empty cache) from showing a blank state.
 	s.replayJobs(client)
+	s.replayQueue(client)
 
 	ctx := r.Context()
 

@@ -16,10 +16,10 @@ import type { Comic, ImportOptions } from "../api/generated";
  * - loose images are one book between them — the folder-of-images case — and go
  *   to POST /api/imports as a single import.
  *
- * The work runs sequentially. It has to: a PDF or an image import creates a job,
- * and the per-user cap is two, so firing a whole batch at once would 429 the
- * third. CBZs create no job, but serialising them too keeps the progress
- * readout to one file at a time and the code to one path.
+ * The work runs sequentially. A PDF or an image import creates a queued job, and
+ * one client should not pile the whole batch onto the server's queue in a burst;
+ * serialising also keeps the progress readout to one file at a time and the code
+ * to one path. CBZs create no job but go through the same loop.
  */
 
 export interface UploadProgress {

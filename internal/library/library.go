@@ -16,8 +16,10 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +69,12 @@ type Config struct {
 	Workers int
 	// CoverWidth is the cover thumbnail's long edge in pixels.
 	CoverWidth int
+	// OnPDF is called with the absolute path of a PDF found under the root, so it
+	// can be converted to a CBZ. It is a callback for the same reason StatusFunc
+	// is: internal/server depends on this package, so reaching back to the import
+	// manager directly would close a cycle even though imports never imports
+	// library. main wires this to the manager's EnqueueLibraryPDF. May be nil.
+	OnPDF func(absPath string)
 }
 
 const (
@@ -104,6 +112,14 @@ type Library struct {
 
 	pubMu   sync.Mutex
 	lastPub time.Time
+
+	// pdfSeen dedupes PDF hand-offs by path and modtime. Scan, watch and repeated
+	// sweeps all find the same file, so a PDF is handed to OnPDF only when it is
+	// new or its modtime changed. A failed conversion will not retry until the
+	// file itself changes, which keeps a bad PDF from being re-queued every sweep;
+	// the manager's input-path dedupe is the correctness backstop.
+	pdfMu   sync.Mutex
+	pdfSeen map[string]int64
 }
 
 // New builds a Library. onStatus may be nil, which is what a test that does not
@@ -128,10 +144,42 @@ func New(st *store.Store, cfg Config, onStatus StatusFunc) *Library {
 		// add scheduling overhead to work that is already CPU-saturated.
 		cfg.Workers = runtime.NumCPU()
 	}
-	l := &Library{st: st, cfg: cfg, onStatus: onStatus}
+	l := &Library{st: st, cfg: cfg, onStatus: onStatus, pdfSeen: map[string]int64{}}
 	l.status.Root = cfg.Root
 	l.status.ComicCount = l.count()
 	return l
+}
+
+// isPDF reports whether a filename is a PDF worth handing to OnPDF. Dotfiles are
+// skipped for the same reason isCandidate skips them: a half-copied file often
+// lands under a dotfile name first.
+func isPDF(name string) bool {
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "._") {
+		return false
+	}
+	return strings.EqualFold(filepath.Ext(name), ".pdf")
+}
+
+// handlePDF hands a PDF off to OnPDF, deduped by path and modtime so scan, watch
+// and sweep between them queue it only once. rel is a root-relative slash path.
+func (l *Library) handlePDF(rel string) {
+	if l.cfg.OnPDF == nil {
+		return
+	}
+	abs := l.abs(rel)
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return
+	}
+	mod := fi.ModTime().UnixNano()
+	l.pdfMu.Lock()
+	if seen, ok := l.pdfSeen[abs]; ok && seen == mod {
+		l.pdfMu.Unlock()
+		return
+	}
+	l.pdfSeen[abs] = mod
+	l.pdfMu.Unlock()
+	l.cfg.OnPDF(abs)
 }
 
 // Status is what the scanner is doing right now.

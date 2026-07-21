@@ -268,6 +268,11 @@ export interface ProgressRequest {
 export type ImportStage = string;
 export const StageUploading: ImportStage = "uploading";
 /**
+ * StageQueued is a job waiting for a worker. Uploads no longer run on submit:
+ * they land in a server-wide queue and sit here until a worker picks them up.
+ */
+export const StageQueued: ImportStage = "queued";
+/**
  * StageExtracting is the PDF-only phase where embedded page images are pulled
  * out of the uploaded PDF, before the image pipeline's StageReading runs.
  */
@@ -309,6 +314,18 @@ export interface ImportJob {
   comicId?: string;
   startedAt: number /* int64 */;
   finishedAt?: number /* int64 */;
+  /**
+   * Kind is how the job is processed: "folder" (images), "pdf" (uploaded PDF)
+   * or "library-pdf" (a PDF dropped into the watched library folder, converted
+   * to a server-wide CBZ). The UI badges a library-pdf job apart.
+   */
+  kind: string;
+  /**
+   * QueueSeq orders a job in the queue; the lowest unfinished seq runs next. The
+   * client sorts the queued list by it. The staged input path and options JSON
+   * are deliberately not here — they are server-only and carry temp paths.
+   */
+  queueSeq: number /* int */;
 }
 /**
  * ImportOptions mirrors package.py's flags. Defaults live in the Go zero value
@@ -379,10 +396,27 @@ export const WSTypeComics: WSType = "comics";
 /**
  * WSTypeJobs and WSTypeJob are per-user: an import belongs to the user who
  * started it, and its name is the folder they picked, which is usually the
- * sensitive part. Both go out via Hub.BroadcastTo.
+ * sensitive part. Both go out via Hub.BroadcastTo — never Broadcast — and
+ * never enter the replay cache. An admin additionally sees every job,
+ * including ownerless library-pdf ones, through Hub.BroadcastToAdmins, which
+ * likewise bypasses the cache; the admin snapshot on connect is built
+ * per-connection in replayJobs for the same reason.
  */
 export const WSTypeJobs: WSType = "jobs";
 export const WSTypeJob: WSType = "job";
+/**
+ * WSTypeQueue carries the queue's paused flag. It is the same for every user
+ * and non-sensitive, so unlike the job types it may be broadcast to everyone
+ * and cached for replay on connect.
+ */
+export const WSTypeQueue: WSType = "queue";
+/**
+ * QueueState is the import queue's shared state: whether the scheduler is
+ * paused. Job contents stay per-user; only this server-wide flag is broadcast.
+ */
+export interface QueueState {
+  paused: boolean;
+}
 /**
  * WSMessage is the push envelope. Payload fields are mutually exclusive
  * pointers so tygo emits them as optional and the client can discriminate on
@@ -397,4 +431,5 @@ export interface WSMessage {
   comics?: Comic[];
   jobs?: ImportJob[];
   job?: ImportJob;
+  queue?: QueueState;
 }

@@ -1,11 +1,17 @@
 import { useRef, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   ChevronDown,
   Copy,
   FileArchive,
   FolderUp,
+  ListOrdered,
   Loader2,
+  Pause,
+  Play,
+  Trash2,
   TriangleAlert,
   Upload,
   X,
@@ -18,6 +24,7 @@ import { Button } from "../components/Button";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { useLiveData } from "../live/LiveData";
+import { useAuth } from "../auth/AuthProvider";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { formatBytes } from "../lib/format";
@@ -27,6 +34,7 @@ import type { Collection, DupeGroup, ImportJob, ImportOptions } from "../api/gen
 
 const STAGE_LABEL: Record<string, string> = {
   uploading: "Uploading",
+  queued: "Queued",
   extracting: "Extracting PDF pages",
   reading: "Fingerprinting pages",
   grouping: "Finding duplicates",
@@ -76,7 +84,9 @@ const SENSITIVITY = [
 type SensitivityId = (typeof SENSITIVITY)[number]["id"];
 
 export function ImportPage() {
-  const { jobs } = useLiveData();
+  const { jobs, paused } = useLiveData();
+  const { user } = useAuth();
+  const isAdmin = user?.isAdmin ?? false;
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const cbzInputRef = useRef<HTMLInputElement>(null);
@@ -228,7 +238,12 @@ export function ImportPage() {
 
   const uploading = start.isPending || comicUploads.busy;
 
-  const active = jobs.filter((j) => j.stage !== "done" && j.stage !== "failed");
+  const queued = jobs
+    .filter((j) => j.stage === "queued")
+    .sort((a, b) => a.queueSeq - b.queueSeq);
+  const active = jobs.filter(
+    (j) => j.stage !== "done" && j.stage !== "failed" && j.stage !== "queued",
+  );
   const finished = jobs.filter((j) => j.stage === "done" || j.stage === "failed");
 
   return (
@@ -696,6 +711,10 @@ export function ImportPage() {
         </div>
       </section>
 
+      {(queued.length > 0 || paused) && (
+        <QueueSection queued={queued} paused={paused} isAdmin={isAdmin} />
+      )}
+
       <section className={vstack({ gap: "4", alignItems: "stretch" })}>
         <SectionTitle>In progress</SectionTitle>
         {active.length === 0 ? (
@@ -710,13 +729,268 @@ export function ImportPage() {
 
       {finished.length > 0 && (
         <section className={vstack({ gap: "4", alignItems: "stretch" })}>
-          <SectionTitle>Recently finished</SectionTitle>
+          <div className={hstack({ gap: "3", justify: "space-between", alignItems: "center" })}>
+            <SectionTitle>Recently finished</SectionTitle>
+            <ClearFinishedButton />
+          </div>
           {finished.map((job) => (
             <JobRow key={job.id} job={job} />
           ))}
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * The import queue: jobs waiting for a worker. Everyone sees the order and can
+ * remove their own jobs; an admin can pause the whole queue and reorder or
+ * remove any job — the server authorizes each action, this only hides controls
+ * the caller cannot use.
+ */
+function QueueSection({
+  queued,
+  paused,
+  isAdmin,
+}: {
+  queued: ImportJob[];
+  paused: boolean;
+  isAdmin: boolean;
+}) {
+  const pauseResume = useMutation({
+    mutationFn: (next: boolean) =>
+      http.post<{ ok: boolean }>(`/api/imports/queue/${next ? "pause" : "resume"}`),
+    onError: (err) =>
+      toaster.create({
+        type: "error",
+        title: "Couldn't change the queue",
+        description: err instanceof HttpError ? err.message : "Please try again.",
+      }),
+  });
+
+  const reorder = useMutation({
+    mutationFn: (jobIds: string[]) =>
+      http.put<{ ok: boolean }>("/api/imports/queue/order", { jobIds }),
+    onError: (err) =>
+      toaster.create({
+        type: "error",
+        title: "Couldn't reorder the queue",
+        description: err instanceof HttpError ? err.message : "Please try again.",
+      }),
+  });
+
+  // Reordering swaps two neighbours and sends the whole new order, which is the
+  // idempotent shape the server takes.
+  function move(index: number, delta: number) {
+    const next = [...queued];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    reorder.mutate(next.map((j) => j.id));
+  }
+
+  return (
+    <section className={vstack({ gap: "4", alignItems: "stretch" })}>
+      <div className={hstack({ gap: "3", justify: "space-between", alignItems: "center" })}>
+        <SectionTitle>Queue</SectionTitle>
+        {isAdmin && (
+          <Button
+            variant="ghost"
+            icon={paused ? <Play size={15} /> : <Pause size={15} />}
+            busy={pauseResume.isPending}
+            onClick={() => pauseResume.mutate(!paused)}
+          >
+            {paused ? "Resume queue" : "Pause queue"}
+          </Button>
+        )}
+      </div>
+
+      {paused && (
+        <div
+          className={hstack({
+            gap: "2.5",
+            p: "3.5",
+            borderRadius: "md",
+            bg: "accentQuiet",
+            borderWidth: "1px",
+            borderColor: "border",
+            fontSize: "sm",
+            color: "text",
+          })}
+        >
+          <Pause size={16} className={css({ color: "accent", flexShrink: 0 })} />
+          The queue is paused. Jobs wait here until it is resumed.
+        </div>
+      )}
+
+      {queued.length === 0 ? (
+        <EmptyState icon={ListOrdered} title="Nothing queued">
+          Uploads wait here for a free worker before they start.
+        </EmptyState>
+      ) : (
+        queued.map((job, i) => (
+          <QueueRow
+            key={job.id}
+            job={job}
+            isAdmin={isAdmin}
+            first={i === 0}
+            last={i === queued.length - 1}
+            onMove={(delta) => move(i, delta)}
+          />
+        ))
+      )}
+    </section>
+  );
+}
+
+function QueueRow({
+  job,
+  isAdmin,
+  first,
+  last,
+  onMove,
+}: {
+  job: ImportJob;
+  isAdmin: boolean;
+  first: boolean;
+  last: boolean;
+  onMove: (delta: number) => void;
+}) {
+  const remove = useMutation({
+    mutationFn: () => http.post<{ ok: boolean }>(`/api/imports/${job.id}/cancel`),
+    onSuccess: () =>
+      toaster.create({ type: "success", title: `Removed ${job.name || "import"} from the queue` }),
+    onError: (err) =>
+      toaster.create({
+        type: "error",
+        title: "Couldn't remove that",
+        description: err instanceof HttpError ? err.message : "It may have already started.",
+      }),
+  });
+
+  return (
+    <div
+      className={hstack({
+        gap: "3",
+        justify: "space-between",
+        p: "4",
+        borderRadius: "lg",
+        bg: "surface",
+        borderWidth: "1px",
+        borderColor: "border",
+      })}
+    >
+      <div className={hstack({ gap: "2.5", minW: "0" })}>
+        <span className={css({ fontWeight: "semibold", truncate: true })}>
+          {job.name || "Untitled import"}
+        </span>
+        {job.kind === "library-pdf" && (
+          <span
+            className={css({
+              px: "1.5",
+              py: "0.5",
+              borderRadius: "sm",
+              bg: "ink.750",
+              color: "textMuted",
+              fontSize: "2xs",
+              fontWeight: "bold",
+              flexShrink: 0,
+            })}
+          >
+            LIBRARY PDF
+          </span>
+        )}
+      </div>
+
+      <div className={hstack({ gap: "1.5", flexShrink: 0 })}>
+        {isAdmin && (
+          <>
+            <IconButton
+              label="Move up in the queue"
+              disabled={first}
+              onClick={() => onMove(-1)}
+            >
+              <ArrowUp size={15} />
+            </IconButton>
+            <IconButton
+              label="Move down in the queue"
+              disabled={last}
+              onClick={() => onMove(1)}
+            >
+              <ArrowDown size={15} />
+            </IconButton>
+          </>
+        )}
+        <IconButton
+          label={`Remove ${job.name || "import"} from the queue`}
+          danger
+          disabled={remove.isPending}
+          onClick={() => remove.mutate()}
+        >
+          <X size={15} />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
+function ClearFinishedButton() {
+  const clear = useMutation({
+    mutationFn: () => http.del<{ ok: boolean }>("/api/imports/finished"),
+    onSuccess: () => {
+      // No local update needed: the server pushes a fresh job snapshot over the
+      // WS after clearing, and LiveData replaces its list from it.
+      toaster.create({ type: "success", title: "Cleared finished imports" });
+    },
+    onError: (err) =>
+      toaster.create({
+        type: "error",
+        title: "Couldn't clear those",
+        description: err instanceof HttpError ? err.message : "Please try again.",
+      }),
+  });
+  return (
+    <Button
+      variant="ghost"
+      icon={<Trash2 size={15} />}
+      busy={clear.isPending}
+      onClick={() => clear.mutate()}
+    >
+      Clear finished
+    </Button>
+  );
+}
+
+function IconButton({
+  label,
+  danger,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={css({
+        color: "textMuted",
+        cursor: "pointer",
+        borderRadius: "sm",
+        p: "1",
+        _hover: { color: danger ? "danger" : "text", bg: "surfaceRaised" },
+        _disabled: { opacity: 0.35, cursor: "not-allowed", _hover: { bg: "transparent" } },
+      })}
+    >
+      {children}
+    </button>
   );
 }
 

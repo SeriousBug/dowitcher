@@ -103,7 +103,8 @@ func (l *Library) handleEvent(w *fsnotify.Watcher, d *debouncer, ev fsnotify.Eve
 		// here since most removals are files.
 		_ = w.Remove(ev.Name)
 	}
-	if !isCandidate(filepath.Base(ev.Name)) {
+	base := filepath.Base(ev.Name)
+	if !isCandidate(base) && !isPDF(base) {
 		return
 	}
 	// Every remaining event kind -- create, write, remove, rename, chmod --
@@ -147,7 +148,7 @@ func (l *Library) armTree(d *debouncer, dir string) {
 			}
 			return nil
 		}
-		if !isCandidate(e.Name()) {
+		if !isCandidate(e.Name()) && !isPDF(e.Name()) {
 			return nil
 		}
 		if rel, err := filepath.Rel(l.cfg.Root, p); err == nil {
@@ -206,6 +207,12 @@ func (l *Library) handlePath(ctx context.Context, d *debouncer, rel string) {
 		// keeps the dispatcher free for other files and gives this one another
 		// full quiet period, which is what a slow link over SSH needs.
 		d.arm(rel)
+		return
+	}
+	// A PDF is not a comic row: once it has settled it goes to the import queue,
+	// which converts it to a CBZ the scanner then picks up as a library comic.
+	if isPDF(filepath.Base(rel)) {
+		l.handlePDF(rel)
 		return
 	}
 	// os.Stat is the honest answer to "is the old path still there?" for a

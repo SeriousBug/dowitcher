@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -21,14 +22,20 @@ import (
 func importServer(t *testing.T, opt func(*Config)) (*httptest.Server, *store.Store, Config) {
 	t.Helper()
 	srv, ts, st, cfg := libraryServer(t, opt)
-	m, err := imports.NewManager(st, nil, imports.ManagerConfig{
-		UploadsDir: cfg.UploadsDir,
-		ReportDir:  filepath.Join(t.TempDir(), "reports"),
+	m, err := imports.NewManager(st, srv.Hub(), imports.ManagerConfig{
+		UploadsDir:    cfg.UploadsDir,
+		ReportDir:     filepath.Join(t.TempDir(), "reports"),
+		ImportTempDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("new import manager: %v", err)
 	}
 	srv.SetImporter(m)
+	// The queue no longer runs on submit: a worker pool drains it, so the test
+	// needs Run going or every job would sit at "queued" forever.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go m.Run(ctx)
 	return ts, st, cfg
 }
 

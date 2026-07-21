@@ -13,11 +13,15 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
-// recorder collects what a job pushed to the hub, and who it was addressed to.
+// recorder collects what a job pushed to the hub, split by fan-out method so a
+// test can tell an owner-addressed frame from an admin one from a server-wide
+// queue frame.
 type recorder struct {
-	mu   sync.Mutex
-	msgs []api.WSMessage
-	to   []string
+	mu        sync.Mutex
+	msgs      []api.WSMessage // BroadcastTo
+	to        []string
+	adminMsgs []api.WSMessage // BroadcastToAdmins
+	allMsgs   []api.WSMessage // Broadcast
 }
 
 func (r *recorder) BroadcastTo(userID string, m api.WSMessage) {
@@ -27,6 +31,18 @@ func (r *recorder) BroadcastTo(userID string, m api.WSMessage) {
 	r.to = append(r.to, userID)
 }
 
+func (r *recorder) BroadcastToAdmins(m api.WSMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adminMsgs = append(r.adminMsgs, m)
+}
+
+func (r *recorder) Broadcast(m api.WSMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.allMsgs = append(r.allMsgs, m)
+}
+
 // recipients is who the hub was asked to deliver to, in order.
 func (r *recorder) recipients() []string {
 	r.mu.Lock()
@@ -34,16 +50,50 @@ func (r *recorder) recipients() []string {
 	return append([]string(nil), r.to...)
 }
 
-func (r *recorder) jobs() []api.ImportJob {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func jobsIn(msgs []api.WSMessage) []api.ImportJob {
 	var out []api.ImportJob
-	for _, m := range r.msgs {
+	for _, m := range msgs {
 		if m.Job != nil {
 			out = append(out, *m.Job)
 		}
 	}
 	return out
+}
+
+func (r *recorder) jobs() []api.ImportJob {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return jobsIn(r.msgs)
+}
+
+// adminJobs is the job frames delivered to admins, which for an ownerless job is
+// the only place they appear.
+func (r *recorder) adminJobs() []api.ImportJob {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return jobsIn(r.adminMsgs)
+}
+
+// queuePaused is the last paused flag broadcast server-wide, or nil if none.
+func (r *recorder) queuePaused() *bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var last *bool
+	for _, m := range r.allMsgs {
+		if m.Queue != nil {
+			p := m.Queue.Paused
+			last = &p
+		}
+	}
+	return last
+}
+
+// runWorkers starts the manager's queue drain for the test's lifetime.
+func runWorkers(t *testing.T, m *Manager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go m.Run(ctx)
 }
 
 func testManager(t *testing.T) (*Manager, *store.Store, *recorder, api.User) {
@@ -60,8 +110,10 @@ func testManager(t *testing.T) (*Manager, *store.Store, *recorder, api.User) {
 	rec := &recorder{}
 	dir := t.TempDir()
 	m, err := NewManager(st, rec, ManagerConfig{
-		UploadsDir: filepath.Join(dir, "uploads"),
-		ReportDir:  filepath.Join(dir, "reports"),
+		UploadsDir:    filepath.Join(dir, "uploads"),
+		ReportDir:     filepath.Join(dir, "reports"),
+		ImportTempDir: filepath.Join(dir, "tmp"),
+		Workers:       1,
 	})
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
@@ -111,6 +163,7 @@ func jobStage(t *testing.T, st *store.Store, userID, jobID string) api.ImportJob
 // the job says so, and the dupe report survives it.
 func TestManagerRunsAnImportEndToEnd(t *testing.T) {
 	m, st, rec, user := testManager(t)
+	runWorkers(t, m)
 	src := srcFolder(t)
 
 	job, err := m.Begin(user.ID)
@@ -203,11 +256,18 @@ func TestManagerRecoversOrphanedJobs(t *testing.T) {
 		t.Fatalf("save finished: %v", err)
 	}
 
-	// A second Manager over the same store is what a restart looks like.
-	if _, err := NewManager(st, nil, m.cfg); err != nil {
+	// A second Manager over the same store, with Run going, is what a restart
+	// looks like. The orphan has no staged input, so recovery cannot resume it
+	// and fails it; the finished job is history and must survive.
+	m2, err := NewManager(st, nil, m.cfg)
+	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
+	runWorkers(t, m2)
 
+	waitFor(t, "the orphan to be failed", func() bool {
+		return jobStage(t, st, user.ID, orphan.ID).FinishedAt != 0
+	})
 	got := jobStage(t, st, user.ID, orphan.ID)
 	if got.Stage != api.StageFailed {
 		t.Fatalf("an orphaned job must be failed on startup, got %q", got.Stage)
@@ -225,6 +285,7 @@ func TestManagerRecoversOrphanedJobs(t *testing.T) {
 // job nobody is running cannot be cancelled twice.
 func TestManagerCancel(t *testing.T) {
 	m, st, _, user := testManager(t)
+	runWorkers(t, m)
 	src := srcFolder(t)
 
 	job, err := m.Begin(user.ID)
@@ -268,10 +329,10 @@ func TestManagerJobsArePrivate(t *testing.T) {
 	if _, err := m.Dupes(bob.ID, job.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("bob must not read alice's dupe report, got %v", err)
 	}
-	if jobs := m.JobSnapshot(bob.ID); len(jobs) != 0 {
+	if jobs := m.JobSnapshot(bob.ID, false); len(jobs) != 0 {
 		t.Fatalf("bob's snapshot should be empty, got %#v", jobs)
 	}
-	if jobs := m.JobSnapshot(alice.ID); len(jobs) != 1 || jobs[0].ID != job.ID {
+	if jobs := m.JobSnapshot(alice.ID, false); len(jobs) != 1 || jobs[0].ID != job.ID {
 		t.Fatalf("alice's snapshot = %#v, want her one job", jobs)
 	}
 }
@@ -285,12 +346,12 @@ func TestManagerSnapshotPrefersLiveState(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	m.Uploaded(job.ID, 42)
-	jobs := m.JobSnapshot(user.ID)
+	jobs := m.JobSnapshot(user.ID, false)
 	if len(jobs) != 1 || jobs[0].Done != 42 {
 		t.Fatalf("snapshot = %#v, want the live upload count", jobs)
 	}
 	m.Fail(job.ID, "nope")
-	jobs = m.JobSnapshot(user.ID)
+	jobs = m.JobSnapshot(user.ID, false)
 	if len(jobs) != 1 || jobs[0].Stage != api.StageFailed || jobs[0].FinishedAt == 0 {
 		t.Fatalf("snapshot = %#v, want the failed job", jobs)
 	}
@@ -321,9 +382,14 @@ func TestManagerCapsConcurrentImports(t *testing.T) {
 	if _, err := m.Begin(bob.ID); err != nil {
 		t.Fatalf("bob's first import must not be refused for alice's: %v", err)
 	}
-	// A refused import leaves no history behind: it never started.
-	if got := len(m.JobSnapshot(alice.ID)); got != maxPerUser {
-		t.Fatalf("alice has %d jobs, want %d — a refused Begin wrote a row", got, maxPerUser)
+	// A refused import leaves no history behind: it never started. Counted from
+	// the store rather than the snapshot, which caps at snapshotLimit.
+	rows, err := st.ListImportJobs(alice.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(rows) != maxPerUser {
+		t.Fatalf("alice has %d jobs, want %d — a refused Begin wrote a row", len(rows), maxPerUser)
 	}
 
 	// Ending one frees the slot.

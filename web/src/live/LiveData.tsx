@@ -10,6 +10,8 @@ interface LiveDataValue {
   library: LibraryStatus | null;
   /** Every import job the server currently knows about, newest first. */
   jobs: ImportJob[];
+  /** Whether the import queue is paused. Server-wide, seeded on connect. */
+  paused: boolean;
   connection: ConnectionState;
 }
 
@@ -18,11 +20,18 @@ const LiveDataContext = createContext<LiveDataValue | null>(null);
 export function LiveDataProvider({ children }: { children: ReactNode }) {
   const [library, setLibrary] = useState<LibraryStatus | null>(null);
   const [jobs, setJobs] = useState<ImportJob[]>([]);
+  const [paused, setPaused] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
 
   useEffect(() => {
     const onLibrary = (msg: WSMessage) => {
       if (msg.library) setLibrary(msg.library);
+    };
+
+    // The queue's paused flag, server-wide. Seeded on connect and pushed on every
+    // pause/resume.
+    const onQueue = (msg: WSMessage) => {
+      if (msg.queue) setPaused(msg.queue.paused);
     };
 
     // The complete job set, sent on connect. Replacing rather than merging is
@@ -50,6 +59,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       wsClient.subscribe("library", onLibrary),
       wsClient.subscribe("jobs", onJobs),
       wsClient.subscribe("job", onJob),
+      wsClient.subscribe("queue", onQueue),
       wsClient.onStatus(setConnection),
     ];
     wsClient.connect();
@@ -60,7 +70,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const value: LiveDataValue = { library, jobs, connection };
+  const value: LiveDataValue = { library, jobs, paused, connection };
   return <LiveDataContext value={value}>{children}</LiveDataContext>;
 }
 
