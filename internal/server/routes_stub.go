@@ -30,8 +30,9 @@ type Library interface {
 // need the goroutine behind a job.
 type Importer interface {
 	// JobSnapshot is every job the hub should tell userID about: what is running
-	// now plus what recently finished.
-	JobSnapshot(userID string) []api.ImportJob
+	// now plus what recently finished. An admin sees every job, including the
+	// ownerless library-pdf ones no per-user query returns.
+	JobSnapshot(userID string, isAdmin bool) []api.ImportJob
 	// Begin registers a job before its bytes have arrived, so an upload that
 	// takes minutes shows up as an import immediately rather than only once the
 	// last byte lands.
@@ -49,8 +50,23 @@ type Importer interface {
 	// Fail marks a job that died before the pipeline got it, which is how a
 	// broken upload stops being a spinner.
 	Fail(jobID, msg string)
-	// Cancel stops a running job on behalf of its owner.
+	// Cancel stops a job on behalf of its owner: a queued job is removed, a
+	// running one is cancelled. The store's ownership check gates it.
 	Cancel(userID, jobID string) error
+	// CancelAny is Cancel without the ownership check, for an admin, so an admin
+	// can remove any job including an ownerless library-pdf one.
+	CancelAny(jobID string) error
+	// Pause and Resume stop and restart the queue's dequeue. An in-flight job
+	// runs to completion; only the picking of the next job is held. Admin-only.
+	Pause() error
+	Resume() error
+	// Paused reports the queue's current paused flag, for the connect snapshot.
+	Paused() bool
+	// Reorder rewrites the queued order from the full ordered id list. Admin-only.
+	Reorder(jobIDs []string) error
+	// EnqueueLibraryPDF queues a PDF dropped into the watched library folder for
+	// conversion to a server-wide CBZ. The job is ownerless.
+	EnqueueLibraryPDF(pdfPath string)
 	// Dupes is the finished job's merge report.
 	Dupes(userID, jobID string) ([]api.DupeGroup, error)
 	// Adopt files an already-packed CBZ at srcPath as a comic owned by userID.
@@ -78,17 +94,26 @@ func (s *Server) libraryStatus() api.LibraryStatus {
 	return s.lib.Status()
 }
 
-// jobSnapshot returns userID's import jobs, or none when no importer is
-// attached.
-func (s *Server) jobSnapshot(userID string) []api.ImportJob {
+// jobSnapshot returns the import jobs the hub should tell this client about, or
+// none when no importer is attached. An admin gets the server-wide set.
+func (s *Server) jobSnapshot(userID string, isAdmin bool) []api.ImportJob {
 	if s.importer == nil {
 		return []api.ImportJob{}
 	}
-	jobs := s.importer.JobSnapshot(userID)
+	jobs := s.importer.JobSnapshot(userID, isAdmin)
 	if jobs == nil {
 		return []api.ImportJob{}
 	}
 	return jobs
+}
+
+// queuePaused reports the import queue's paused flag, or false when no importer
+// is attached.
+func (s *Server) queuePaused() bool {
+	if s.importer == nil {
+		return false
+	}
+	return s.importer.Paused()
 }
 
 // needImporter fails a request that needs the pipeline when none is wired.
@@ -147,6 +172,15 @@ func (s *Server) registerLibraryRoutes() {
 func (s *Server) registerImportRoutes() {
 	s.mux.HandleFunc("POST /api/imports", s.requireAuth(s.handleCreateImport))
 	s.mux.HandleFunc("GET /api/imports", s.requireAuth(s.handleListImports))
+	// Clearing finished jobs is scoped in the handler: an owner clears their own,
+	// an admin clears everyone's. So it is requireAuth, not requireAdmin.
+	s.mux.HandleFunc("DELETE /api/imports/finished", s.requireAuth(s.handleClearFinishedImports))
+	// Pausing the queue and reordering it act on jobs the caller may not own, so
+	// they are an admin's. Removing a single job stays per-owner (the handler
+	// branches on admin), so its cancel route is requireAuth.
+	s.mux.HandleFunc("POST /api/imports/queue/pause", s.requireAdmin(s.handlePauseQueue))
+	s.mux.HandleFunc("POST /api/imports/queue/resume", s.requireAdmin(s.handleResumeQueue))
+	s.mux.HandleFunc("PUT /api/imports/queue/order", s.requireAdmin(s.handleReorderQueue))
 	s.mux.HandleFunc("POST /api/imports/{id}/cancel", s.requireAuth(s.handleCancelImport))
 	s.mux.HandleFunc("GET /api/imports/{id}/dupes", s.requireAuth(s.handleImportDupes))
 }

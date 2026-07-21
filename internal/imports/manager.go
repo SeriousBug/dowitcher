@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,23 +19,47 @@ import (
 )
 
 // ErrNotRunning means a cancel arrived for a job that no goroutine is working
-// on: it already finished, or it died with a previous process.
+// on and that is not queued either: it already finished, or it died with a
+// previous process.
 var ErrNotRunning = errors.New("imports: job is not running")
 
-// ErrTooManyImports means the user already has as many imports in flight as they
-// are allowed.
-var ErrTooManyImports = errors.New("imports: too many imports already running")
+// ErrTooManyImports means the user already has as many imports queued or running
+// as they are allowed.
+var ErrTooManyImports = errors.New("imports: too many imports already queued")
+
+// errFiling wraps a failure that happened after the CBZ was built, when filing
+// it as a comic did not work. It gets a different user message than a pipeline
+// failure, so the run path tells the two apart with errors.Is.
+var errFiling = errors.New("imports: filing the comic failed")
+
+// Job kinds decide how a worker processes a job and how restart resumes it.
+const (
+	// kindFolder is a folder of uploaded images run through the dedupe pipeline.
+	kindFolder = "folder"
+	// kindPDF is an uploaded PDF: its page images are extracted, then run through
+	// the same pipeline, and the result is filed as the uploader's comic.
+	kindPDF = "pdf"
+	// kindLibraryPDF is a PDF dropped into the watched library folder. It is
+	// converted to a CBZ written beside it inside the library root and the PDF is
+	// deleted; no comic row is filed — the scanner adopts the CBZ as a server-wide
+	// library comic. Such a job is ownerless and visible only to admins.
+	kindLibraryPDF = "library-pdf"
+)
 
 // Broadcaster is the WS fan-out a job reports to. It is an interface so this
 // package does not depend on the server package — the dependency runs the other
 // way, and main wires the hub in.
-// Only BroadcastTo is declared. A job carries its owner, the folder name the
-// uploader picked (usually the sensitive part), the comic it produced and its
-// progress, so there is no such thing as an import message that belongs on
-// every socket. Not naming Broadcast here is what stops one being sent by
-// reflex.
+//
+// A job carries its owner, the folder name the uploader picked (usually the
+// sensitive part), the comic it produced and its progress, so an owned job is
+// never broadcast to everyone: it goes to its owner via BroadcastTo, and to
+// admins via BroadcastToAdmins so the Import page's queue is complete for
+// whoever may manage it. Broadcast is used only for the queue's paused flag,
+// which is one server-wide boolean.
 type Broadcaster interface {
+	Broadcast(msg api.WSMessage)
 	BroadcastTo(userID string, msg api.WSMessage)
+	BroadcastToAdmins(msg api.WSMessage)
 }
 
 const (
@@ -43,19 +68,21 @@ const (
 	// to every client — and a client that cannot keep up gets its frames dropped
 	// anyway. Four updates a second is more than a progress bar can show.
 	progressInterval = 250 * time.Millisecond
-	// maxPerUser bounds the imports one user can have in flight. Each running
-	// import fans its decode out over every core and holds a thumbnail per image,
-	// so two of them already saturate the machine; a client looping the upload
-	// endpoint would otherwise multiply that without limit.
-	//
-	// Two rather than one because queueing a second book while the first runs is
-	// the normal way to use this, and refusing it would be a worse tool for no
-	// safety gained.
-	maxPerUser = 2
+	// maxPerUser bounds the imports one user may have queued or running at once.
+	// The queue drains at a fixed worker count regardless, so this is an
+	// anti-abuse cap on the backlog a single client can pile up rather than a
+	// concurrency limit: a client looping the upload endpoint would otherwise
+	// grow the queue without bound.
+	maxPerUser = 50
 	// snapshotLimit bounds the job set the WS carries. The snapshot is the whole
 	// set rather than a delta, so it is sent in full on every connect; a user who
 	// has run five hundred imports does not need all of them to clear a spinner.
 	snapshotLimit = 20
+	// defaultWorkers is the queue's worker count when ManagerConfig.Workers is
+	// unset. Two lets a second book queue behind the first and start the moment it
+	// finishes, without oversubscribing a machine whose imports already fan their
+	// decode across every core.
+	defaultWorkers = 2
 )
 
 // ManagerConfig locates what a job produces.
@@ -74,6 +101,8 @@ type ManagerConfig struct {
 	// MaxUploadBytes caps the total size of the images extracted from a PDF, the
 	// PDF-bomb guard mirroring the upload cap. 0 uses defaultMaxExtractBytes.
 	MaxUploadBytes int64
+	// Workers is the number of queue workers. 0 uses defaultWorkers.
+	Workers int
 }
 
 // defaultMaxExtractBytes caps a PDF's extracted images when MaxUploadBytes is
@@ -81,31 +110,57 @@ type ManagerConfig struct {
 // allowed to produce as much as an upload of the same content would.
 const defaultMaxExtractBytes = 8 << 30
 
-// Manager turns the pure pipeline into running jobs: it owns their goroutines,
-// their progress reporting, and the rows that say what happened.
+// Manager turns the pure pipeline into a queue drained by a worker pool: it owns
+// the jobs' order, their goroutines, their progress reporting, and the rows that
+// say what happened.
 type Manager struct {
 	store *store.Store
 	hub   Broadcaster
 	cfg   ManagerConfig
 
 	mu sync.Mutex
-	// running holds the jobs this process is working on. It is the live view;
-	// the DB row is the durable one, and JobSnapshot layers this over that.
-	running map[string]*liveJob
+	// cond wakes workers when a job is enqueued, the queue is resumed, or the
+	// process starts draining.
+	cond *sync.Cond
+	// live holds every unfinished job this process tracks: uploading, queued and
+	// running alike. It is the live view; the DB row is the durable one, and
+	// JobSnapshot layers this over that.
+	live map[string]*liveJob
+	// queue is the ordered ids of jobs waiting for a worker, lowest queue_seq
+	// first. A worker pops the front.
+	queue []string
+	// paused holds the queue: an in-flight job runs on, but no new one is picked.
+	paused bool
+	// draining is set when baseCtx is cancelled (shutdown). A worker whose job is
+	// cancelled while draining leaves the row unfinished so a restart resumes it,
+	// the opposite of a user cancel, which is terminal.
+	draining bool
+	workers  int
+	// seq is the monotonic source of queue_seq, seeded from max(queue_seq)+1 so
+	// it stays ahead of every row a restart recovers.
+	seq     int64
+	baseCtx context.Context
 }
 
 type liveJob struct {
 	snap     api.ImportJob
 	cancel   context.CancelFunc
 	lastEmit time.Time
+	// inputPath is the staged folder or source PDF the job runs from, and
+	// optionsJSON the api.ImportOptions it runs with. Both are server-only and
+	// mirror the DB's input_path/options columns so a worker needs no round trip.
+	inputPath   string
+	optionsJSON string
 }
 
-// NewManager prepares the directories and recovers orphaned jobs.
+// NewManager prepares the directories and seeds the queue's counter. It does not
+// recover orphaned jobs — that is Run's first act, because recovery re-enqueues
+// survivors onto the queue the workers drain.
 func NewManager(st *store.Store, hub Broadcaster, cfg ManagerConfig) (*Manager, error) {
 	if cfg.UploadsDir == "" {
 		return nil, errors.New("imports: no uploads dir configured")
 	}
-	for _, d := range []string{cfg.UploadsDir, cfg.ReportDir} {
+	for _, d := range []string{cfg.UploadsDir, cfg.ReportDir, cfg.ImportTempDir} {
 		if d == "" {
 			continue
 		}
@@ -113,36 +168,159 @@ func NewManager(st *store.Store, hub Broadcaster, cfg ManagerConfig) (*Manager, 
 			return nil, fmt.Errorf("imports: %w", err)
 		}
 	}
-	m := &Manager{store: st, hub: hub, cfg: cfg, running: map[string]*liveJob{}}
-	if err := m.recover(); err != nil {
-		return nil, err
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = defaultWorkers
 	}
+	m := &Manager{store: st, hub: hub, cfg: cfg, live: map[string]*liveJob{}, workers: workers}
+	m.cond = sync.NewCond(&m.mu)
+
+	next, err := st.MaxImportQueueSeq()
+	if err != nil {
+		return nil, fmt.Errorf("imports: seed queue seq: %w", err)
+	}
+	m.seq = next + 1
+
+	paused, err := st.QueuePaused()
+	if err != nil {
+		return nil, fmt.Errorf("imports: read queue paused: %w", err)
+	}
+	m.paused = paused
 	return m, nil
 }
 
-// recover fails the jobs a crash left behind.
-//
-// A row that still says "running" after a restart is a lie: the goroutine that
-// would have finished it died with the process, and nothing will ever move it.
-// Left alone it is a spinner that never stops. Marking it failed at startup, the
-// one moment we know for certain that nothing is running, is the only place this
-// can be got right.
-func (m *Manager) recover() error {
-	jobs, err := m.store.ListUnfinishedImportJobs()
-	if err != nil {
-		return fmt.Errorf("imports: recover jobs: %w", err)
+// Run recovers orphaned jobs, then drives the worker pool until ctx is
+// cancelled. main calls it in a goroutine after SetImporter.
+func (m *Manager) Run(ctx context.Context) {
+	m.mu.Lock()
+	m.baseCtx = ctx
+	m.mu.Unlock()
+
+	m.recover()
+
+	// When ctx is cancelled the process is going down: flip draining and wake
+	// every worker so an idle one returns instead of blocking on cond forever.
+	go func() {
+		<-ctx.Done()
+		m.mu.Lock()
+		m.draining = true
+		m.cond.Broadcast()
+		m.mu.Unlock()
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < m.workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.worker()
+		}()
 	}
-	now := time.Now().Unix()
-	for _, j := range jobs {
-		j.Stage = api.StageFailed
-		j.Message = "interrupted by a server restart"
-		j.FinishedAt = now
-		if err := m.store.SaveImportJob(j); err != nil {
-			return fmt.Errorf("imports: recover job %s: %w", j.ID, err)
+	wg.Wait()
+}
+
+// worker is one drain loop: wait for a job, take the lowest-seq one, process it
+// by kind. It returns when the process is draining.
+func (m *Manager) worker() {
+	for {
+		m.mu.Lock()
+		for (m.paused || len(m.queue) == 0) && !m.draining {
+			m.cond.Wait()
 		}
-		log.Printf("import %s was interrupted by a restart, marked failed", j.ID)
+		if m.draining {
+			m.mu.Unlock()
+			return
+		}
+		id := m.queue[0]
+		m.queue = m.queue[1:]
+		j, ok := m.live[id]
+		if !ok {
+			// Cancelled out of the queue between the signal and here.
+			m.mu.Unlock()
+			continue
+		}
+		runCtx, cancel := context.WithCancel(m.baseCtx)
+		j.cancel = cancel
+		j.snap.Stage = stageForKind(j.snap.Kind)
+		j.snap.Done, j.snap.Total = 0, 0
+		snap := j.snap
+		inputPath := j.inputPath
+		optionsJSON := j.optionsJSON
+		m.mu.Unlock()
+
+		var opts api.ImportOptions
+		if optionsJSON != "" {
+			if err := json.Unmarshal([]byte(optionsJSON), &opts); err != nil {
+				log.Printf("import %s: bad options json: %v", snap.ID, err)
+			}
+		}
+
+		m.save(snap)
+		m.broadcast(snap)
+
+		switch snap.Kind {
+		case kindLibraryPDF:
+			m.runLibraryPDF(runCtx, snap, inputPath, opts)
+		case kindPDF:
+			m.runPDF(runCtx, snap, inputPath, opts)
+		default:
+			m.run(runCtx, snap, inputPath, opts)
+		}
 	}
-	return nil
+}
+
+// stageForKind is the first stage a worker reports when it picks a job up.
+func stageForKind(kind string) api.ImportStage {
+	if kind == kindPDF || kind == kindLibraryPDF {
+		return api.StageExtracting
+	}
+	return api.StageReading
+}
+
+// recover resolves the jobs a crash or shutdown left unfinished. A job whose
+// staged input (or source PDF) still exists is reset to queued and re-enqueued;
+// the rest are failed, because nothing will ever move them and a spinner that
+// never stops is worse than an honest failure.
+func (m *Manager) recover() {
+	jobs, err := m.store.ListRecoverableImportJobs()
+	if err != nil {
+		log.Printf("imports: recover jobs: %v", err)
+		return
+	}
+	// Preserve the pre-crash order so a resume is still FIFO.
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].Job.QueueSeq < jobs[j].Job.QueueSeq })
+	now := time.Now().Unix()
+	for _, r := range jobs {
+		if r.InputPath != "" && pathExists(r.InputPath) {
+			job := r.Job
+			job.Stage = api.StageQueued
+			job.FinishedAt = 0
+			m.mu.Lock()
+			// A concurrent EnqueueLibraryPDF (the initial scan racing recovery) may
+			// have already taken this exact row into the live view; skip it rather
+			// than queue it twice.
+			if _, ok := m.live[job.ID]; ok {
+				m.mu.Unlock()
+				continue
+			}
+			job.QueueSeq = int(m.seq)
+			m.seq++
+			m.live[job.ID] = &liveJob{snap: job, inputPath: r.InputPath, optionsJSON: r.Options}
+			m.queue = append(m.queue, job.ID)
+			m.mu.Unlock()
+			m.save(job)
+			m.broadcast(job)
+			log.Printf("import %s re-queued after restart", job.ID)
+			continue
+		}
+		job := r.Job
+		job.Stage = api.StageFailed
+		job.Message = "interrupted by a server restart"
+		job.FinishedAt = now
+		m.save(job)
+		m.broadcast(job)
+		log.Printf("import %s could not be resumed after restart, marked failed", job.ID)
+	}
 }
 
 // Begin registers a job before its bytes arrive, so an upload that takes minutes
@@ -157,6 +335,7 @@ func (m *Manager) Begin(userID string) (api.ImportJob, error) {
 	j := api.ImportJob{
 		ID:        store.NewID(),
 		OwnerID:   userID,
+		Kind:      kindFolder,
 		Stage:     api.StageUploading,
 		StartedAt: time.Now().Unix(),
 	}
@@ -164,7 +343,7 @@ func (m *Manager) Begin(userID string) (api.ImportJob, error) {
 	// starting together would both count the other's absence and both proceed.
 	m.mu.Lock()
 	n := 0
-	for _, live := range m.running {
+	for _, live := range m.live {
 		if live.snap.OwnerID == userID {
 			n++
 		}
@@ -173,16 +352,16 @@ func (m *Manager) Begin(userID string) (api.ImportJob, error) {
 		m.mu.Unlock()
 		// No row is written: a job that never started should not sit in the
 		// user's history as a failure they have to read.
-		return api.ImportJob{}, fmt.Errorf("%w: %d already running", ErrTooManyImports, n)
+		return api.ImportJob{}, fmt.Errorf("%w: %d already queued", ErrTooManyImports, n)
 	}
-	m.running[j.ID] = &liveJob{snap: j}
+	m.live[j.ID] = &liveJob{snap: j}
 	m.mu.Unlock()
 
 	if err := m.store.SaveImportJob(j); err != nil {
 		// The slot was claimed before the row existed; a job with no row is one
 		// nothing will ever clear, so it must not keep occupying the cap.
 		m.mu.Lock()
-		delete(m.running, j.ID)
+		delete(m.live, j.ID)
 		m.mu.Unlock()
 		return api.ImportJob{}, err
 	}
@@ -199,75 +378,189 @@ func (m *Manager) Uploaded(jobID string, files int) {
 	})
 }
 
-// Start hands a fully uploaded folder to the pipeline and returns at once. ctx
-// is the detached request context, so the import outlives the request.
-func (m *Manager) Start(ctx context.Context, jobID, srcDir string, opts api.ImportOptions) error {
+// Start enqueues a fully uploaded folder. It no longer runs the import: the job
+// waits in the queue until a worker picks it up. ctx is ignored — a queued job's
+// lifecycle is owned by the manager, not the request that posted it.
+func (m *Manager) Start(_ context.Context, jobID, srcDir string, opts api.ImportOptions) error {
 	if opts.Name == "" {
 		opts.Name = uploadTitle(srcDir)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-
-	m.mu.Lock()
-	j, ok := m.running[jobID]
-	if !ok {
-		m.mu.Unlock()
-		cancel()
-		return store.ErrNotFound
-	}
-	j.cancel = cancel
-	j.snap.Name = opts.Name
-	j.snap.Stage = api.StageReading
-	j.snap.Done, j.snap.Total = 0, 0
-	snap := j.snap
-	m.mu.Unlock()
-
-	m.save(snap)
-	m.broadcast(snap)
-	go m.run(runCtx, snap, srcDir, opts)
-	return nil
+	return m.enqueueUploaded(jobID, kindFolder, srcDir, opts)
 }
 
-// StartPDF extracts a fully uploaded PDF into a temp dir of page images, then
-// runs the same pipeline as a folder import. ctx is the detached request
-// context, so the work outlives the request.
-//
-// pdfPath is removed once its images are out; the temp dir of images is owned by
-// run, which removes it when the pipeline is done.
-func (m *Manager) StartPDF(ctx context.Context, jobID, pdfPath string, opts api.ImportOptions) error {
+// StartPDF enqueues a fully uploaded PDF. Like Start it only queues the work; a
+// worker extracts and runs it later.
+func (m *Manager) StartPDF(_ context.Context, jobID, pdfPath string, opts api.ImportOptions) error {
 	if opts.Name == "" {
 		opts.Name = pdfTitle(pdfPath)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	return m.enqueueUploaded(jobID, kindPDF, pdfPath, opts)
+}
 
+// enqueueUploaded moves a job that Begin created from uploading to queued,
+// recording its staged input and options and pushing it onto the queue.
+func (m *Manager) enqueueUploaded(jobID, kind, inputPath string, opts api.ImportOptions) error {
+	optsJSON, err := json.Marshal(opts)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
-	j, ok := m.running[jobID]
+	j, ok := m.live[jobID]
 	if !ok {
 		m.mu.Unlock()
-		cancel()
 		return store.ErrNotFound
 	}
-	j.cancel = cancel
+	j.snap.Kind = kind
 	j.snap.Name = opts.Name
-	j.snap.Stage = api.StageExtracting
+	j.snap.Stage = api.StageQueued
 	j.snap.Done, j.snap.Total = 0, 0
+	j.snap.QueueSeq = int(m.seq)
+	m.seq++
+	j.inputPath = inputPath
+	j.optionsJSON = string(optsJSON)
 	snap := j.snap
+	m.queue = append(m.queue, jobID)
+	m.cond.Signal()
 	m.mu.Unlock()
 
+	if err := m.store.SetImportJobInput(jobID, inputPath, string(optsJSON)); err != nil {
+		log.Printf("import %s: save input: %v", jobID, err)
+	}
 	m.save(snap)
 	m.broadcast(snap)
-	go m.runPDF(runCtx, snap, pdfPath, opts)
 	return nil
 }
 
-// runPDF pulls the page images out of the PDF, then hands the resulting folder
-// to the shared pipeline. The image temp dir is created here and taken over by
-// run's own cleanup; the PDF is removed as soon as its pages are extracted.
-func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
-	// The handler stages the PDF in a dedicated temp dir that holds only this
-	// file; that dir is the PDF job's to clean up now that the request has
-	// returned, so it goes when the PDF is consumed.
-	pdfDir := filepath.Dir(pdfPath)
+// EnqueueLibraryPDF queues a PDF dropped in the library folder for conversion to
+// a server-wide CBZ. The job is ownerless. It dedupes against any unfinished job
+// already carrying the same input path, so scan, watch and repeated sweeps
+// handing off the same file only ever queue it once.
+func (m *Manager) EnqueueLibraryPDF(pdfPath string) {
+	optsJSON := "{}"
+	j := api.ImportJob{
+		ID:        store.NewID(),
+		Kind:      kindLibraryPDF,
+		Name:      pdfTitle(pdfPath),
+		Stage:     api.StageQueued,
+		StartedAt: time.Now().Unix(),
+	}
+	m.mu.Lock()
+	for _, live := range m.live {
+		if live.inputPath == pdfPath && live.snap.FinishedAt == 0 {
+			m.mu.Unlock()
+			return
+		}
+	}
+	// The live map misses a row the recovery pass has not re-enqueued yet (the
+	// initial scan can reach a dropped PDF before recovery runs). The DB is the
+	// shared ground truth: if an unfinished job already carries this path,
+	// recovery will re-queue it, so a fresh one must not be created. A job is put
+	// in the live map before its row is written, so this can never see the job it
+	// is about to create.
+	if has, err := m.store.HasUnfinishedImportJobForInput(pdfPath); err != nil {
+		m.mu.Unlock()
+		log.Printf("library-pdf: dedup check %s: %v", pdfPath, err)
+		return
+	} else if has {
+		m.mu.Unlock()
+		return
+	}
+	j.QueueSeq = int(m.seq)
+	m.seq++
+	m.live[j.ID] = &liveJob{snap: j, inputPath: pdfPath, optionsJSON: optsJSON}
+	m.queue = append(m.queue, j.ID)
+	m.cond.Signal()
+	m.mu.Unlock()
 
+	if err := m.store.SaveImportJob(j); err != nil {
+		log.Printf("library-pdf %s: save: %v", j.ID, err)
+		m.mu.Lock()
+		delete(m.live, j.ID)
+		m.removeFromQueueLocked(j.ID)
+		m.mu.Unlock()
+		return
+	}
+	if err := m.store.SetImportJobInput(j.ID, pdfPath, optsJSON); err != nil {
+		log.Printf("library-pdf %s: save input: %v", j.ID, err)
+	}
+	m.broadcast(j)
+}
+
+// Pause and Resume hold and release the queue's dequeue. Broadcast to everyone
+// because the paused flag is one server-wide, non-sensitive boolean.
+func (m *Manager) Pause() error  { return m.setPaused(true) }
+func (m *Manager) Resume() error { return m.setPaused(false) }
+
+func (m *Manager) setPaused(paused bool) error {
+	m.mu.Lock()
+	m.paused = paused
+	m.cond.Broadcast()
+	m.mu.Unlock()
+	if err := m.store.SetQueuePaused(paused); err != nil {
+		return err
+	}
+	if m.hub != nil {
+		m.hub.Broadcast(api.WSMessage{Type: api.WSTypeQueue, Queue: &api.QueueState{Paused: paused}})
+	}
+	return nil
+}
+
+// Paused reports the queue's current paused flag.
+func (m *Manager) Paused() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
+}
+
+// Reorder rewrites the queued order from the full ordered id list, mirroring
+// ReorderCollection. Ids not currently queued are ignored; any queued id the
+// list omits keeps its place at the end. Running jobs are untouched.
+func (m *Manager) Reorder(jobIDs []string) error {
+	m.mu.Lock()
+	queued := map[string]bool{}
+	for _, id := range m.queue {
+		queued[id] = true
+	}
+	var newQueue []string
+	for _, id := range jobIDs {
+		if queued[id] {
+			newQueue = append(newQueue, id)
+			delete(queued, id)
+		}
+	}
+	for _, id := range m.queue {
+		if queued[id] {
+			newQueue = append(newQueue, id)
+		}
+	}
+	base := m.seq
+	ids := make([]string, len(newQueue))
+	snaps := make([]api.ImportJob, 0, len(newQueue))
+	for i, id := range newQueue {
+		ids[i] = id
+		if j, ok := m.live[id]; ok {
+			j.snap.QueueSeq = int(base) + i
+			snaps = append(snaps, j.snap)
+		}
+	}
+	m.queue = newQueue
+	m.seq = base + int64(len(newQueue))
+	m.mu.Unlock()
+
+	if err := m.store.ReorderImportJobs(ids, base); err != nil {
+		return err
+	}
+	for _, s := range snaps {
+		m.broadcast(s)
+	}
+	return nil
+}
+
+// runPDF extracts a PDF's page images, then runs the shared pipeline and files
+// the result as the uploader's comic. The source PDF is kept until the pipeline
+// succeeds so a drain mid-pipeline still has it to re-extract on restart.
+func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
+	pdfDir := filepath.Dir(pdfPath)
 	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-pdf-*")
 	if err != nil {
 		log.Printf("import %s: pdf temp dir: %v", job.ID, err)
@@ -275,30 +568,198 @@ func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string,
 		m.Fail(job.ID, "the server had nowhere to unpack the PDF")
 		return
 	}
+	// The extracted images are transient either way.
+	defer os.RemoveAll(srcDir)
 
-	budget := m.cfg.MaxUploadBytes
-	if budget <= 0 {
-		budget = defaultMaxExtractBytes
-	}
-	if _, err := ExtractPDF(ctx, pdfPath, srcDir, budget, m.progress(job.ID)); err != nil {
+	if _, err := ExtractPDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
+		if m.drained(err) {
+			m.requeueForRestart(job.ID)
+			return
+		}
 		log.Printf("import %s: extract pdf: %v", job.ID, err)
 		os.RemoveAll(pdfDir)
-		os.RemoveAll(srcDir)
 		m.Fail(job.ID, failMessage(err))
 		return
 	}
-	// The PDF has served its purpose; the extracted images are what the pipeline
-	// needs from here.
-	os.RemoveAll(pdfDir)
 
-	// run owns srcDir from here, including removing it, and reports the rest of
-	// the pipeline the same way a folder import does.
-	m.run(ctx, job, srcDir, opts)
+	if err := m.pipeline(ctx, job, srcDir, opts); err != nil {
+		if m.drained(err) {
+			m.requeueForRestart(job.ID)
+			return
+		}
+		os.RemoveAll(pdfDir)
+		m.failPipeline(job.ID, err)
+		return
+	}
+	os.RemoveAll(pdfDir)
 }
 
-// Fail marks a job that died before the pipeline ever got it. Without it a
-// broken upload leaves a job stuck in "uploading" until the next restart sweeps
-// it.
+// runLibraryPDF converts a PDF dropped in the library folder into a CBZ written
+// beside it, then deletes the PDF. It files no comic row: the scanner picks the
+// CBZ up as a server-wide library comic. Writing to a hidden same-dir temp name
+// and renaming into place keeps the watcher from ever seeing a half-written CBZ.
+func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
+	libDir := filepath.Dir(pdfPath)
+	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-libpdf-*")
+	if err != nil {
+		log.Printf("library-pdf %s: temp dir: %v", job.ID, err)
+		m.Fail(job.ID, "the server had nowhere to unpack the PDF")
+		return
+	}
+	defer os.RemoveAll(srcDir)
+
+	if _, err := ExtractPDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
+		if m.drained(err) {
+			m.requeueForRestart(job.ID)
+			return
+		}
+		log.Printf("library-pdf %s: extract: %v", job.ID, err)
+		m.Fail(job.ID, failMessage(err))
+		return
+	}
+
+	base := strings.TrimSuffix(filepath.Base(pdfPath), filepath.Ext(pdfPath))
+	if opts.Name == "" {
+		opts.Name = base
+	}
+	// A hidden name (leading dot) so the watcher's isCandidate skips it while it
+	// is being written; the .cbz suffix keeps the pipeline from appending one.
+	tmpPath := filepath.Join(libDir, "."+store.NewID()+".cbz")
+	res, err := Run(ctx, srcDir, tmpPath, opts, m.progress(job.ID))
+	if err != nil {
+		os.Remove(tmpPath)
+		if m.drained(err) {
+			m.requeueForRestart(job.ID)
+			return
+		}
+		log.Printf("library-pdf %s: pipeline: %v", job.ID, err)
+		m.Fail(job.ID, failMessage(err))
+		return
+	}
+
+	outPath := freeCBZPath(libDir, base)
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		os.Remove(tmpPath)
+		log.Printf("library-pdf %s: rename into library: %v", job.ID, err)
+		m.Fail(job.ID, "the converted CBZ could not be written to the library")
+		return
+	}
+	// Confirm the CBZ is on disk before deleting the source: the whole point of
+	// the folder-PDF flow is that the original is not lost until its replacement
+	// is real.
+	if _, err := os.Stat(outPath); err != nil {
+		log.Printf("library-pdf %s: confirm output: %v", job.ID, err)
+		m.Fail(job.ID, "the converted CBZ vanished before it could be confirmed")
+		return
+	}
+	if err := os.Remove(pdfPath); err != nil {
+		log.Printf("library-pdf %s: remove source pdf: %v", job.ID, err)
+	}
+
+	m.finish(job.ID, func(j *api.ImportJob) {
+		j.Stage = api.StageDone
+		j.PageCount = res.PageCount
+		j.SourceCount = res.SourceCount
+		j.ExactDupes = res.ExactDupes
+		j.NearDupes = res.NearDupes
+		j.Done, j.Total = res.PageCount, res.PageCount
+	})
+}
+
+// run is the folder-import goroutine body: pipeline, then file the result.
+func (m *Manager) run(ctx context.Context, job api.ImportJob, srcDir string, opts api.ImportOptions) {
+	if err := m.pipeline(ctx, job, srcDir, opts); err != nil {
+		if m.drained(err) {
+			// Leave srcDir and the unfinished row so a restart resumes.
+			m.requeueForRestart(job.ID)
+			return
+		}
+		os.RemoveAll(srcDir)
+		m.failPipeline(job.ID, err)
+		return
+	}
+	os.RemoveAll(srcDir)
+}
+
+// pipeline builds a CBZ from srcDir and files it as the job owner's comic,
+// returning nil on success. It does not touch srcDir or the source — the caller
+// owns cleanup and inspects the error for a drain-time cancellation.
+func (m *Manager) pipeline(ctx context.Context, job api.ImportJob, srcDir string, opts api.ImportOptions) error {
+	// The comic's id is minted before the CBZ is written so it can name the file:
+	// an upload is addressed by id, never by a name the user chose, because a
+	// name would collide with the unique path index the moment two people import
+	// the same folder.
+	comicID := store.NewID()
+	outPath := filepath.Join(m.cfg.UploadsDir, comicID+".cbz")
+
+	res, err := Run(ctx, srcDir, outPath, opts, m.progress(job.ID))
+	if err != nil {
+		return err
+	}
+	if err := m.file(job, comicID, outPath, opts, res); err != nil {
+		os.Remove(outPath)
+		return fmt.Errorf("%w: %v", errFiling, err)
+	}
+	return nil
+}
+
+// failPipeline turns a pipeline error into the user's failure message: a filing
+// error gets the generic "built but not added" text, everything else the
+// mapped pipeline message.
+func (m *Manager) failPipeline(jobID string, err error) {
+	if errors.Is(err, errFiling) {
+		log.Printf("import %s: file result: %v", jobID, err)
+		m.Fail(jobID, "the comic was built but could not be added to the library")
+		return
+	}
+	log.Printf("import %s: %v", jobID, err)
+	m.Fail(jobID, failMessage(err))
+}
+
+// drained reports whether an error is a shutdown cancellation, in which case the
+// job must be left unfinished for a restart to resume rather than failed.
+func (m *Manager) drained(err error) bool {
+	if !errors.Is(err, context.Canceled) {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.draining
+}
+
+// requeueForRestart drops a job from the live view without ending its row, so
+// the finished_at=0 row plus its still-present input let recover() re-enqueue it
+// on the next start. The input is deliberately not cleaned.
+func (m *Manager) requeueForRestart(jobID string) {
+	m.mu.Lock()
+	j, ok := m.live[jobID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	j.snap.Stage = api.StageQueued
+	j.snap.FinishedAt = 0
+	snap := j.snap
+	cancel := j.cancel
+	delete(m.live, jobID)
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	m.save(snap)
+	log.Printf("import %s left queued for restart (server draining)", jobID)
+}
+
+// extractBudget is the byte cap on a PDF's extracted images.
+func (m *Manager) extractBudget() int64 {
+	if m.cfg.MaxUploadBytes > 0 {
+		return m.cfg.MaxUploadBytes
+	}
+	return defaultMaxExtractBytes
+}
+
+// Fail marks a job that died before it produced a comic. Without it a broken
+// upload leaves a job stuck in "uploading" until the next restart sweeps it.
 func (m *Manager) Fail(jobID, msg string) {
 	m.finish(jobID, func(j *api.ImportJob) {
 		j.Stage = api.StageFailed
@@ -306,26 +767,82 @@ func (m *Manager) Fail(jobID, msg string) {
 	})
 }
 
-// Cancel stops a running job on behalf of its owner. The store's ownership check
-// runs first, so a job that is not yours is not found rather than forbidden.
+// Cancel stops a job on behalf of its owner. The store's ownership check runs
+// first, so a job that is not yours is not found rather than forbidden.
 func (m *Manager) Cancel(userID, jobID string) error {
 	if _, err := m.store.GetImportJob(userID, jobID); err != nil {
 		return err
 	}
+	return m.cancelJob(jobID)
+}
+
+// CancelAny stops any job without the ownership check, for an admin. It is the
+// only way to cancel an ownerless library-pdf job, which no per-user lookup
+// returns.
+func (m *Manager) CancelAny(jobID string) error {
+	return m.cancelJob(jobID)
+}
+
+// cancelJob removes a queued job or cancels a running one. A queued removal
+// cleans the staged input and ends the row as cancelled; a running job winds
+// itself up through its context and reports the failure itself.
+func (m *Manager) cancelJob(jobID string) error {
 	m.mu.Lock()
-	j, ok := m.running[jobID]
+	for i, id := range m.queue {
+		if id != jobID {
+			continue
+		}
+		m.queue = append(m.queue[:i], m.queue[i+1:]...)
+		var kind, inputPath string
+		if j, ok := m.live[jobID]; ok {
+			kind, inputPath = j.snap.Kind, j.inputPath
+		}
+		m.mu.Unlock()
+		cleanInput(kind, inputPath)
+		m.finish(jobID, func(j *api.ImportJob) {
+			j.Stage = api.StageFailed
+			j.Message = "cancelled"
+		})
+		return nil
+	}
+	j, ok := m.live[jobID]
 	var cancel context.CancelFunc
 	if ok {
 		cancel = j.cancel
 	}
 	m.mu.Unlock()
 	if cancel == nil {
+		// Not queued and not running: an uploading job with no context yet, or one
+		// that already finished.
 		return ErrNotRunning
 	}
-	// The pipeline checks ctx between files and stages, so the goroutine winds
-	// itself up and reports the failure; there is nothing to wait for here.
 	cancel()
 	return nil
+}
+
+// removeFromQueueLocked splices a job id out of the queue. Caller holds mu.
+func (m *Manager) removeFromQueueLocked(jobID string) {
+	for i, id := range m.queue {
+		if id == jobID {
+			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			return
+		}
+	}
+}
+
+// cleanInput removes a cancelled or drained job's staged input. A library-pdf's
+// input is the user's own file in the library folder and is left alone.
+func cleanInput(kind, inputPath string) {
+	if inputPath == "" {
+		return
+	}
+	switch kind {
+	case kindFolder:
+		os.RemoveAll(inputPath)
+	case kindPDF:
+		// The uploaded PDF sits alone in its own staging dir; remove the dir.
+		os.RemoveAll(filepath.Dir(inputPath))
+	}
 }
 
 // Dupes returns a finished job's merge report.
@@ -356,54 +873,33 @@ func (m *Manager) Dupes(userID, jobID string) ([]api.DupeGroup, error) {
 	return out, nil
 }
 
-// JobSnapshot is the complete job set the hub tells userID about: the persisted
-// history, capped, with this process's live state laid over it. The overlay
-// matters because a running job's row is only rewritten on a stage change, so
-// the DB alone would report a stale position.
-func (m *Manager) JobSnapshot(userID string) []api.ImportJob {
-	rows, err := m.store.ListImportJobs(userID)
+// JobSnapshot is the complete job set the hub tells a client about, with this
+// process's live state laid over the persisted rows. An admin gets the
+// server-wide set — every job, including ownerless library-pdf ones — while
+// everyone else gets only their own.
+func (m *Manager) JobSnapshot(userID string, isAdmin bool) []api.ImportJob {
+	var rows []api.ImportJob
+	var err error
+	if isAdmin {
+		rows, err = m.store.ListAllImportJobs(snapshotLimit)
+	} else {
+		rows, err = m.store.ListImportJobs(userID)
+		if err == nil && len(rows) > snapshotLimit {
+			rows = rows[:snapshotLimit]
+		}
+	}
 	if err != nil {
 		log.Printf("import job snapshot: %v", err)
 		return []api.ImportJob{}
 	}
-	if len(rows) > snapshotLimit {
-		rows = rows[:snapshotLimit]
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i, r := range rows {
-		if j, ok := m.running[r.ID]; ok {
+		if j, ok := m.live[r.ID]; ok {
 			rows[i] = j.snap
 		}
 	}
 	return rows
-}
-
-// run is the job goroutine: pipeline, then file the result.
-func (m *Manager) run(ctx context.Context, job api.ImportJob, srcDir string, opts api.ImportOptions) {
-	// The uploaded images have served their purpose either way; the CBZ is the
-	// artifact worth keeping.
-	defer os.RemoveAll(srcDir)
-
-	// The comic's id is minted before the CBZ is written so it can name the file:
-	// an upload is addressed by id, never by a name the user chose, because a
-	// name would collide with the unique path index the moment two people import
-	// the same folder.
-	comicID := store.NewID()
-	outPath := filepath.Join(m.cfg.UploadsDir, comicID+".cbz")
-
-	res, err := Run(ctx, srcDir, outPath, opts, m.progress(job.ID))
-	if err != nil {
-		log.Printf("import %s: %v", job.ID, err)
-		m.Fail(job.ID, failMessage(err))
-		return
-	}
-	if err := m.file(job, comicID, outPath, opts, res); err != nil {
-		log.Printf("import %s: file result: %v", job.ID, err)
-		os.Remove(outPath)
-		m.Fail(job.ID, "the comic was built but could not be added to the library")
-		return
-	}
 }
 
 // file records the finished CBZ as a comic owned by the uploader.
@@ -527,7 +1023,7 @@ func (m *Manager) progress(jobID string) ProgressFunc {
 // connection.
 func (m *Manager) tick(jobID string, mutate func(*api.ImportJob) bool) {
 	m.mu.Lock()
-	j, ok := m.running[jobID]
+	j, ok := m.live[jobID]
 	if !ok {
 		m.mu.Unlock()
 		return
@@ -555,7 +1051,7 @@ func (m *Manager) tick(jobID string, mutate func(*api.ImportJob) bool) {
 // cannot fall back to the stale row.
 func (m *Manager) finish(jobID string, mutate func(*api.ImportJob)) {
 	m.mu.Lock()
-	j, ok := m.running[jobID]
+	j, ok := m.live[jobID]
 	if !ok {
 		m.mu.Unlock()
 		return
@@ -569,7 +1065,7 @@ func (m *Manager) finish(jobID string, mutate func(*api.ImportJob)) {
 	m.save(snap)
 
 	m.mu.Lock()
-	delete(m.running, jobID)
+	delete(m.live, jobID)
 	m.mu.Unlock()
 	if cancel != nil {
 		// Releases the context regardless of how the job ended.
@@ -584,15 +1080,19 @@ func (m *Manager) save(j api.ImportJob) {
 	}
 }
 
-// broadcast reports a job to its owner alone. Fanning it out to everyone would
-// put the uploader's folder name, comic id and progress on every connected
-// socket, and the job list a client builds from these is per-user everywhere
-// else — the snapshot on connect, the REST listing, the store's own query.
+// broadcast reports a job to its owner and to every admin. An owned job reaches
+// its owner (whose folder name and comic id it carries) plus the admins who may
+// manage the queue; an ownerless library-pdf job reaches admins alone. It never
+// goes to Broadcast, which would put a per-user payload on every socket.
 func (m *Manager) broadcast(j api.ImportJob) {
 	if m.hub == nil {
 		return
 	}
-	m.hub.BroadcastTo(j.OwnerID, api.WSMessage{Type: api.WSTypeJob, Job: &j})
+	msg := api.WSMessage{Type: api.WSTypeJob, Job: &j}
+	if j.OwnerID != "" {
+		m.hub.BroadcastTo(j.OwnerID, msg)
+	}
+	m.hub.BroadcastToAdmins(msg)
 }
 
 // failMessage maps a pipeline error onto something worth showing a user. The
@@ -616,6 +1116,28 @@ func failMessage(err error) string {
 		return fmt.Sprintf("this folder has more than %d images; import it as separate books", maxFiles)
 	}
 	return "the import failed; the server log has the details"
+}
+
+// freeCBZPath finds an unused "<base>.cbz" under dir, appending " (1)", " (2)"…
+// until one is free, so a converted PDF never clobbers an existing library file.
+func freeCBZPath(dir, base string) string {
+	for i := 0; ; i++ {
+		name := base + ".cbz"
+		if i > 0 {
+			name = fmt.Sprintf("%s (%d).cbz", base, i)
+		}
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			return p
+		}
+	}
+}
+
+// pathExists reports whether a staged input is still on disk, for restart
+// recovery to decide whether a job can resume.
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // uploadTitle names an import after the folder the user picked, which arrives as

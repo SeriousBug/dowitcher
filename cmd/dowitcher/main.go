@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -128,23 +129,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Constructing the manager is also the orphan-job sweep: a job still marked
-	// running in the DB is a lie left by a crash, since its goroutine died with
-	// the process.
+	// The queue drains at a fixed worker count rather than running every upload on
+	// submit. Two is enough for a home instance; a busier one can raise it.
+	importWorkers := 2
+	if v := os.Getenv("DOWITCHER_IMPORT_WORKERS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Fatalf("DOWITCHER_IMPORT_WORKERS: want a positive integer, got %q", v)
+		}
+		importWorkers = n
+	}
+
 	im, err := imports.NewManager(st, srv.Hub(), imports.ManagerConfig{
 		UploadsDir:    uploadsDir,
 		ReportDir:     filepath.Join(dataDir, "imports"),
 		ImportTempDir: importTempDir,
+		Workers:       importWorkers,
 	})
 	if err != nil {
 		log.Fatalf("import manager: %v", err)
 	}
 	srv.SetImporter(im)
+	// Run recovers jobs a crash or shutdown left unfinished and then drains the
+	// queue. It blocks until ctx is cancelled, so it runs in its own goroutine.
+	go im.Run(ctx)
 
 	lib := library.New(st, library.Config{
 		Root:          libraryRoot,
 		DataDir:       dataDir,
 		SweepInterval: sweepInterval,
+		// A PDF dropped into the library folder is converted to a CBZ through the
+		// same import queue, as an ownerless server-wide job.
+		OnPDF: im.EnqueueLibraryPDF,
 	}, func(s api.LibraryStatus) {
 		srv.Hub().Broadcast(api.WSMessage{Type: api.WSTypeLibrary, Library: &s})
 	})
