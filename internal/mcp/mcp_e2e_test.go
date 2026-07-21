@@ -204,6 +204,46 @@ func TestMCPClaimIsAdminOnly(t *testing.T) {
 	}
 }
 
+// TestMCPBulkTagAndRename: one tag_comic call tags several comics at once, an
+// unseen id is skipped rather than fatal, and rename is gated on ownership.
+func TestMCPBulkTagAndRename(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+	up := comicID(t, e.store, e.aliceID, "AliceOnly")
+	sess := connect(t, e.url, token(t, e.store, e.aliceID))
+
+	var out BulkTagOutput
+	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib, up}, Tags: []string{"read"}}, &out)
+	if len(out.Comics) != 2 {
+		t.Fatalf("bulk tag should touch both comics, got %d", len(out.Comics))
+	}
+	for _, c := range out.Comics {
+		if len(c.Tags) != 1 || c.Tags[0] != "read" {
+			t.Errorf("comic %s tags = %v, want [read]", c.ID, c.Tags)
+		}
+	}
+
+	// An unseen id is recorded in Skipped, not fatal to the batch.
+	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib, "nope"}, Tags: []string{"fav"}}, &out)
+	if len(out.Skipped) != 1 || out.Skipped[0] != "nope" {
+		t.Errorf("skipped = %v, want [nope]", out.Skipped)
+	}
+
+	// Alice owns her upload, so she may rename it.
+	var renamed ComicOutput
+	call(t, sess, "rename_comic", RenameComicInput{ComicID: up, Title: "Renamed"}, &renamed)
+	if renamed.Comic.Title != "Renamed" {
+		t.Errorf("title = %q, want Renamed", renamed.Comic.Title)
+	}
+
+	// Bob can see the library comic but neither owns it nor is admin, so the
+	// ownership gate refuses his rename.
+	bob := connect(t, e.url, token(t, e.store, e.bobID))
+	if msg := callErr(t, bob, "rename_comic", RenameComicInput{ComicID: lib, Title: "Hacked"}); msg == "" {
+		t.Error("a non-owner non-admin renaming a library comic should error")
+	}
+}
+
 // TestMCPTagRoundTrip: tagging adds without dropping, and the tag shows up in
 // list_tags for that user only.
 func TestMCPTagRoundTrip(t *testing.T) {
@@ -211,11 +251,11 @@ func TestMCPTagRoundTrip(t *testing.T) {
 	lib := comicID(t, e.store, e.aliceID, "Public")
 	sess := connect(t, e.url, token(t, e.store, e.aliceID))
 
-	var tagged ComicOutput
-	call(t, sess, "tag_comic", TagComicInput{ComicID: lib, Tags: []string{"read", "favorite"}}, &tagged)
-	call(t, sess, "tag_comic", TagComicInput{ComicID: lib, Tags: []string{"classic"}}, &tagged)
-	if len(tagged.Comic.Tags) != 3 {
-		t.Errorf("a second tag call should add, not replace; got %v", tagged.Comic.Tags)
+	var tagged BulkTagOutput
+	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib}, Tags: []string{"read", "favorite"}}, &tagged)
+	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib}, Tags: []string{"classic"}}, &tagged)
+	if len(tagged.Comics) != 1 || len(tagged.Comics[0].Tags) != 3 {
+		t.Errorf("a second tag call should add, not replace; got %+v", tagged.Comics)
 	}
 
 	var tags ListTagsOutput

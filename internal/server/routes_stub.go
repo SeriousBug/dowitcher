@@ -110,6 +110,10 @@ func (s *Server) registerLibraryRoutes() {
 	// collection rather than an import: there is no job behind it to look up.
 	s.mux.HandleFunc("POST /api/comics", s.requireAuth(s.handleUploadComic))
 	s.mux.HandleFunc("GET /api/comics/{id}", s.requireAuth(s.handleGetComic))
+	// Renaming edits a field on the resource rather than running an action, so it
+	// is a PATCH on the comic, not a verb sub-path. The store enforces the
+	// owner-or-admin rule the handler checks.
+	s.mux.HandleFunc("PATCH /api/comics/{id}", s.requireAuth(s.handleRenameComic))
 	s.mux.HandleFunc("GET /api/comics/{id}/pages/{n}", s.requireAuth(s.handleComicPage))
 	s.mux.HandleFunc("GET /api/comics/{id}/cover", s.requireAuth(s.handleComicCover))
 	s.mux.HandleFunc("PUT /api/comics/{id}/progress", s.requireAuth(s.handleSetProgress))
@@ -131,6 +135,7 @@ func (s *Server) registerLibraryRoutes() {
 	s.mux.HandleFunc("POST /api/collections/{id}/comics", s.requireAuth(s.handleAddToCollection))
 	s.mux.HandleFunc("DELETE /api/collections/{id}/comics/{comicId}", s.requireAuth(s.handleRemoveFromCollection))
 	s.mux.HandleFunc("PUT /api/collections/{id}/order", s.requireAuth(s.handleReorderCollection))
+	s.mux.HandleFunc("PUT /api/collections/{id}/cover", s.requireAuth(s.handleSetCollectionCover))
 
 	// Library. Reading the status is everyone's; triggering a walk of the whole
 	// root is an admin's.

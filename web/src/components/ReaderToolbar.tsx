@@ -56,6 +56,7 @@ export function ReaderToolbar({
   visible,
   onShortcuts,
   download,
+  titleAction,
 }: {
   title: string;
   page: number;
@@ -75,6 +76,9 @@ export function ReaderToolbar({
   /** Slot rather than a comic id: the toolbar has no business knowing what a
    *  download is, and the reader already holds the one it would ask about. */
   download?: ReactNode;
+  /** Optional control shown next to the title, e.g. a rename button. Omitted
+   *  when the reader has nothing to offer there. */
+  titleAction?: ReactNode;
 }) {
   return (
     <header
@@ -120,6 +124,7 @@ export function ReaderToolbar({
         >
           {title}
         </span>
+        {titleAction}
       </div>
 
       {/* The visible counter is hidden below sm, and display:none takes it out of

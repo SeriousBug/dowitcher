@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookX, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { BookX, ChevronLeft, ChevronRight, Loader2, Pencil } from "lucide-react";
 import { css, cx } from "styled-system/css";
 import { flex, vstack } from "styled-system/patterns";
 import { DownloadButton } from "../components/DownloadButton";
@@ -10,6 +10,8 @@ import { ReaderResumeBanner } from "../components/ReaderResumeBanner";
 import { ReaderScrubber } from "../components/ReaderScrubber";
 import { ReaderShortcutsDialog } from "../components/ReaderShortcutsDialog";
 import { ReaderToolbar } from "../components/ReaderToolbar";
+import { RenameDialog } from "../components/RenameDialog";
+import { useAuth } from "../auth/AuthProvider";
 import { http, isUnanswered } from "../api/http";
 import { cacheComicDetail, readComicDetail } from "../offline/metaCache";
 import { enqueueProgress, saveProgress as putProgress } from "../offline/progressQueue";
@@ -104,6 +106,8 @@ export function ReaderPage({ id }: { id: string }) {
   const [activity, setActivity] = useState(0);
   const [resumeOffer, setResumeOffer] = useState<number | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const { user } = useAuth();
   const [measuredLandscape, setMeasuredLandscape] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
@@ -614,6 +618,29 @@ export function ReaderPage({ id }: { id: string }) {
         visible={chromeVisible}
         onShortcuts={() => setShortcutsOpen(true)}
         download={<DownloadButton comicId={id} />}
+        titleAction={
+          detail.comic.ownedByMe || user?.isAdmin ? (
+            <button
+              onClick={() => setRenameOpen(true)}
+              aria-label="Rename comic"
+              title="Rename comic"
+              className={css({
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                w: "7",
+                h: "7",
+                borderRadius: "sm",
+                color: "ink.300",
+                cursor: "pointer",
+                flexShrink: 0,
+                _hover: { bg: "rgba(255, 255, 255, 0.08)", color: "text" },
+              })}
+            >
+              <Pencil size={15} />
+            </button>
+          ) : undefined
+        }
       />
 
       <div
@@ -721,6 +748,8 @@ export function ReaderPage({ id }: { id: string }) {
       />
 
       <ReaderShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+
+      <RenameDialog comic={detail.comic} open={renameOpen} onOpenChange={setRenameOpen} />
     </div>
   );
 }

@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
+  GripVertical,
+  Image as ImageIcon,
   Pencil,
   Search,
   Trash2,
@@ -28,6 +30,7 @@ import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { fetchComics } from "../api/comics";
 import { comicLabel } from "../lib/format";
+import { KIND_CONFIG, type CollectionKind } from "../lib/collectionKind";
 import type { Collection, Comic } from "../api/generated";
 
 /** Every mutation here reports the same way, so they say it in one place. */
@@ -41,7 +44,14 @@ function failed(title: string) {
     });
 }
 
-export function CollectionDetailPage({ id }: { id: string }) {
+export function CollectionDetailPage({
+  id,
+  kind = "collection",
+}: {
+  id: string;
+  kind?: CollectionKind;
+}) {
+  const cfg = KIND_CONFIG[kind];
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -66,6 +76,23 @@ export function CollectionDetailPage({ id }: { id: string }) {
   const owned = Boolean(collection && user && collection.ownerId === user.id);
   const comics = comicsQuery.data?.comics ?? [];
 
+  // A local copy of the order so a drag reorders in place without waiting on the
+  // round trip. It resyncs from the server only when the *set* of comics changes
+  // (one added or removed), so an in-flight reorder is not clobbered by the
+  // refetch it triggers.
+  const [order, setOrder] = useState<Comic[]>(comics);
+  useEffect(() => {
+    setOrder((prev) => {
+      const ids = comics.map((c) => c.id);
+      const prevIds = prev.map((c) => c.id);
+      const sameSet =
+        ids.length === prevIds.length && ids.every((cid) => prevIds.includes(cid));
+      if (sameSet) return prev.map((p) => comics.find((c) => c.id === p.id) ?? p);
+      return comics;
+    });
+  }, [comics]);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["comics", { collection: id }] });
     queryClient.invalidateQueries({ queryKey: ["collection", id] });
@@ -76,10 +103,10 @@ export function CollectionDetailPage({ id }: { id: string }) {
     mutationFn: () => http.del<{ ok: boolean }>(`/api/collections/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["collections"] });
-      toaster.create({ type: "success", title: `Deleted ${collection?.name ?? "collection"}` });
-      navigate({ to: "/collections" });
+      toaster.create({ type: "success", title: `Deleted ${collection?.name ?? cfg.singular}` });
+      navigate({ to: cfg.basePath });
     },
-    onError: failed("Couldn't delete that collection"),
+    onError: failed(`Couldn't delete that ${cfg.singular}`),
   });
 
   const removeComic = useMutation({
@@ -92,31 +119,63 @@ export function CollectionDetailPage({ id }: { id: string }) {
     onError: failed("Couldn't remove that comic"),
   });
 
+  const setCover = useMutation({
+    mutationFn: (comic: Comic) =>
+      http.put<Collection>(`/api/collections/${id}/cover`, { comicId: comic.id }),
+    onSuccess: (_data, comic) => {
+      invalidate();
+      toaster.create({ type: "success", title: `${comicLabel(comic)} is now the cover` });
+    },
+    onError: failed("Couldn't set that cover"),
+  });
+
   // The whole order goes up, not a move instruction: the server keeps positions
   // dense from the full list, which makes a retry after a dropped response
   // idempotent instead of a scramble.
   const reorder = useMutation({
     mutationFn: (comicIds: string[]) =>
       http.put<{ ok: boolean }>(`/api/collections/${id}/order`, { comicIds }),
-    onSuccess: () => {
-      invalidate();
-      toaster.create({ type: "success", title: "Reordered" });
-    },
+    onSuccess: () => invalidate(),
     onError: failed("Couldn't save that order"),
   });
 
-  function move(index: number, by: number) {
-    const next = [...comics];
-    const to = index + by;
-    if (to < 0 || to >= next.length) return;
-    [next[index], next[to]] = [next[to], next[index]];
+  function commitOrder(next: Comic[]) {
+    setOrder(next);
     reorder.mutate(next.map((c) => c.id));
+  }
+
+  // Keyboard- and touch-reachable reorder: HTML5 drag does not fire on touch, so
+  // the arrows stay as the accessible path alongside the drag handle.
+  function move(index: number, by: number) {
+    const to = index + by;
+    if (to < 0 || to >= order.length) return;
+    const next = [...order];
+    [next[index], next[to]] = [next[to], next[index]];
+    commitOrder(next);
+  }
+
+  // Live reorder as the pointer moves over another tile: the dragged item slots
+  // into the tile it is over, and dragIndex follows it, so the grid rearranges
+  // under the cursor instead of only on drop.
+  function onDragEnter(i: number) {
+    if (dragIndex === null || dragIndex === i) return;
+    const next = [...order];
+    const [moved] = next.splice(dragIndex, 1);
+    next.splice(i, 0, moved);
+    setOrder(next);
+    setDragIndex(i);
+  }
+
+  function onDrop() {
+    if (dragIndex === null) return;
+    setDragIndex(null);
+    reorder.mutate(order.map((c) => c.id));
   }
 
   if (collectionQuery.isLoading) {
     return (
       <div className={vstack({ gap: "7", alignItems: "stretch" })}>
-        <BackLink />
+        <BackLink kind={kind} />
         <ComicGridSkeleton />
       </div>
     );
@@ -125,8 +184,8 @@ export function CollectionDetailPage({ id }: { id: string }) {
   if (!collection) {
     return (
       <div className={vstack({ gap: "6", alignItems: "stretch" })}>
-        <BackLink />
-        <EmptyState icon={Users} title="This collection isn't here">
+        <BackLink kind={kind} />
+        <EmptyState icon={Users} title={`This ${cfg.singular} isn't here`}>
           It may have been deleted, or its owner stopped sharing it. Reference:{" "}
           <code className={css({ fontFamily: "mono" })}>{id}</code>
         </EmptyState>
@@ -137,10 +196,10 @@ export function CollectionDetailPage({ id }: { id: string }) {
   return (
     <DropOverlay collectionId={id} disabled={!owned}>
     <div className={vstack({ gap: "7", alignItems: "stretch" })}>
-      <BackLink />
+      <BackLink kind={kind} />
 
       <PageHeader
-        eyebrow="Collection"
+        eyebrow={cfg.singularCap}
         title={collection.name}
         subtitle={
           collection.summary ||
@@ -154,15 +213,15 @@ export function CollectionDetailPage({ id }: { id: string }) {
               </Button>
               <Button
                 icon={<Pencil size={16} />}
-                aria-label="Edit collection"
-                title="Edit collection"
+                aria-label={`Edit ${cfg.singular}`}
+                title={`Edit ${cfg.singular}`}
                 onClick={() => setEditing(true)}
               />
               <Button
                 variant="ghost"
                 icon={<Trash2 size={16} />}
-                aria-label="Delete collection"
-                title="Delete collection"
+                aria-label={`Delete ${cfg.singular}`}
+                title={`Delete ${cfg.singular}`}
                 onClick={() => setConfirmDelete(true)}
               />
             </>
@@ -208,7 +267,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
 
       {comicsQuery.isLoading ? (
         <ComicGridSkeleton count={6} />
-      ) : comics.length === 0 ? (
+      ) : order.length === 0 ? (
         <EmptyState
           icon={BookPlus}
           title="Nothing in here yet"
@@ -226,42 +285,90 @@ export function CollectionDetailPage({ id }: { id: string }) {
         </EmptyState>
       ) : (
         <ComicGrid>
-          {comics.map((comic, i) => (
-            <ComicTile
-              key={comic.id}
-              comic={comic}
-              progress={comicsQuery.data?.progress.get(comic.id)}
-              actions={
-                owned ? (
-                  <>
-                    <TileButton
-                      label={`Move ${comicLabel(comic)} earlier`}
-                      onClick={() => move(i, -1)}
-                    >
-                      <ChevronLeft size={14} />
-                    </TileButton>
-                    <TileButton
-                      label={`Move ${comicLabel(comic)} later`}
-                      onClick={() => move(i, 1)}
-                    >
-                      <ChevronRight size={14} />
-                    </TileButton>
-                    <TileButton
-                      label={`Take ${comicLabel(comic)} out of this collection`}
-                      onClick={() => removeComic.mutate(comic)}
-                    >
-                      <X size={14} />
-                    </TileButton>
-                  </>
-                ) : undefined
-              }
-            />
-          ))}
+          {order.map((comic, i) => {
+            const isCover = collection.coverComicId === comic.id;
+            const dragging = dragIndex === i;
+            return (
+              <div
+                key={comic.id}
+                onDragEnter={owned ? () => onDragEnter(i) : undefined}
+                onDragOver={owned ? (e) => e.preventDefault() : undefined}
+                onDrop={owned ? (e) => { e.preventDefault(); onDrop(); } : undefined}
+                className={css({ opacity: dragging ? 0.4 : 1, transition: "opacity 0.15s ease" })}
+              >
+                <ComicTile
+                  comic={comic}
+                  progress={comicsQuery.data?.progress.get(comic.id)}
+                  actions={
+                    owned ? (
+                      <>
+                        <span
+                          draggable
+                          onDragStart={() => setDragIndex(i)}
+                          onDragEnd={() => setDragIndex(null)}
+                          aria-hidden
+                          title="Drag to reorder"
+                          className={css({
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            w: "7",
+                            h: "7",
+                            borderRadius: "sm",
+                            bg: "rgba(10, 8, 9, 0.82)",
+                            color: "ink.100",
+                            cursor: "grab",
+                            backdropFilter: "blur(4px)",
+                            _active: { cursor: "grabbing" },
+                            _hover: { bg: "accent", color: "white" },
+                          })}
+                        >
+                          <GripVertical size={14} />
+                        </span>
+                        <TileButton
+                          label={`Move ${comicLabel(comic)} earlier`}
+                          onClick={() => move(i, -1)}
+                        >
+                          <ChevronLeft size={14} />
+                        </TileButton>
+                        <TileButton
+                          label={`Move ${comicLabel(comic)} later`}
+                          onClick={() => move(i, 1)}
+                        >
+                          <ChevronRight size={14} />
+                        </TileButton>
+                        <TileButton
+                          label={
+                            isCover
+                              ? `${comicLabel(comic)} is the cover`
+                              : `Use ${comicLabel(comic)} as the cover`
+                          }
+                          onClick={() => !isCover && setCover.mutate(comic)}
+                        >
+                          <ImageIcon
+                            size={14}
+                            className={isCover ? css({ color: "accent" }) : undefined}
+                          />
+                        </TileButton>
+                        <TileButton
+                          label={`Take ${comicLabel(comic)} out of this ${cfg.singular}`}
+                          onClick={() => removeComic.mutate(comic)}
+                        >
+                          <X size={14} />
+                        </TileButton>
+                      </>
+                    ) : undefined
+                  }
+                />
+              </div>
+            );
+          })}
         </ComicGrid>
       )}
 
       <EditCollectionDialog
         collection={collection}
+        kind={kind}
         open={editing}
         onOpenChange={setEditing}
         onSaved={invalidate}
@@ -269,6 +376,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
 
       <AddComicsDialog
         collectionId={id}
+        kind={kind}
         alreadyIn={new Set(comics.map((c) => c.id))}
         open={adding}
         onOpenChange={setAdding}
@@ -278,7 +386,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="Delete this collection?"
+        title={`Delete this ${cfg.singular}?`}
         description={
           <>
             <strong>{collection.name}</strong> goes away for good. The comics in it
@@ -296,15 +404,18 @@ export function CollectionDetailPage({ id }: { id: string }) {
 
 function EditCollectionDialog({
   collection,
+  kind,
   open,
   onOpenChange,
   onSaved,
 }: {
   collection: Collection;
+  kind: CollectionKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }) {
+  const cfg = KIND_CONFIG[kind];
   const [name, setName] = useState(collection.name);
   const [summary, setSummary] = useState(collection.summary ?? "");
 
@@ -330,7 +441,7 @@ function EditCollectionDialog({
   });
 
   return (
-    <ModalShell open={open} onOpenChange={onOpenChange} title="Edit collection" maxW="md">
+    <ModalShell open={open} onOpenChange={onOpenChange} title={`Edit ${cfg.singular}`} maxW="md">
       <label className={vstack({ gap: "1.5", alignItems: "stretch" })}>
         <span className={css({ fontSize: "sm", fontWeight: "semibold", color: "text" })}>Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} className={FIELD} />
@@ -372,17 +483,20 @@ function EditCollectionDialog({
  */
 function AddComicsDialog({
   collectionId,
+  kind,
   alreadyIn,
   open,
   onOpenChange,
   onAdded,
 }: {
   collectionId: string;
+  kind: CollectionKind;
   alreadyIn: Set<string>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }) {
+  const cfg = KIND_CONFIG[kind];
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -470,7 +584,7 @@ function AddComicsDialog({
           </p>
         ) : candidates.length === 0 ? (
           <p className={css({ py: "8", textAlign: "center", color: "textMuted", fontSize: "sm" })}>
-            {q ? `Nothing left to add matching “${q}”.` : "Everything you can read is already in here."}
+            {q ? `Nothing left to add matching “${q}”.` : `Everything you can read is already in this ${cfg.singular}.`}
           </p>
         ) : (
           <div className={grid({ columns: { base: 3, sm: 4, md: 5 }, gap: "3" })}>
@@ -548,7 +662,7 @@ function AddComicsDialog({
             disabled={picked.size === 0}
             onClick={() => add.mutate()}
           >
-            Add to collection
+            Add to {cfg.singular}
           </Button>
         </div>
       </div>
@@ -636,10 +750,11 @@ const FIELD = css({
   _focus: { outline: "none", borderColor: "accent" },
 });
 
-function BackLink() {
+function BackLink({ kind }: { kind: CollectionKind }) {
+  const cfg = KIND_CONFIG[kind];
   return (
     <Link
-      to="/collections"
+      to={cfg.basePath}
       className={hstack({
         gap: "2",
         alignSelf: "flex-start",
@@ -651,7 +766,7 @@ function BackLink() {
       })}
     >
       <ArrowLeft size={15} />
-      All collections
+      All {cfg.plural.toLowerCase()}
     </Link>
   );
 }

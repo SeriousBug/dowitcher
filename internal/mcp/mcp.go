@@ -110,34 +110,64 @@ func (s *Server) build() *mcp.Server {
 	}, s.getComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "rename_comic",
+		Description: "Set a comic's display title. Only the owner of an upload or claim, or an admin, can rename. The new title survives library rescans.",
+	}, s.renameComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_tags",
 		Description: "List your own tags with how many visible comics carry each. Tags are private to you.",
 	}, s.listTags)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "tag_comic",
-		Description: "Add one or more tags to a comic. New tag names are created automatically. Tags are private to you and never affect what anyone else sees. Existing tags on the comic are kept.",
+		Description: "Add one or more tags to one or more comics in a single call. Pass every comic id in comicIds and every tag in tags; each tag is added to each comic. New tag names are created automatically. Tags are private to you and never affect what anyone else sees. Existing tags on each comic are kept.",
 	}, s.tagComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "untag_comic",
-		Description: "Remove one or more of your tags from a comic. Tags not currently on the comic are ignored.",
+		Description: "Remove one or more of your tags from one or more comics in a single call. Tags not currently on a comic are ignored.",
 	}, s.untagComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_collections",
-		Description: "List collections visible to you: your own plus any another user has shared.",
+		Description: "List collections and reading lists visible to you: your own plus any another user has shared. Pass kind='collection' or kind='readinglist' to see only one.",
 	}, s.listCollections)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_collection",
-		Description: "Create a new collection you own. Shared collections are readable by every user on the server; private ones (the default) are yours alone.",
+		Description: "Create a collection or reading list you own. Pass kind='readinglist' for an ordered reading list, otherwise a plain collection is made. Shared ones are readable by every user on the server; private ones (the default) are yours alone.",
 	}, s.createCollection)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "update_collection",
+		Description: "Edit one of your collections or reading lists: rename it, change its description, or share/unshare it. Only the fields you pass change.",
+	}, s.updateCollection)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_collection",
+		Description: "Delete one of your collections or reading lists. The comics in it are untouched; only the grouping is removed.",
+	}, s.deleteCollection)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "add_to_collection",
-		Description: "Add a comic to one of your own collections. You must own the collection and be able to see the comic.",
+		Description: "Add a comic to the end of one of your own collections or reading lists. You must own it and be able to see the comic.",
 	}, s.addToCollection)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "remove_from_collection",
+		Description: "Remove a comic from one of your own collections or reading lists.",
+	}, s.removeFromCollection)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "reorder_collection",
+		Description: "Set the order of a collection or reading list by passing all of its comic ids in the order you want. This is how a reading list gets its reading order.",
+	}, s.reorderCollection)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_collection_cover",
+		Description: "Pick which comic's cover represents one of your collections or reading lists. Without a pick, the first comic in order is used.",
+	}, s.setCollectionCover)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "claim_comic",

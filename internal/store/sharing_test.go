@@ -23,7 +23,7 @@ func TestSharedComicCannotBeRelaundered(t *testing.T) {
 	}
 
 	// 1. Alice shares a collection holding her upload.
-	aliceCol, err := st.CreateCollection(NewID(), alice.ID, "Alice shared", "", true)
+	aliceCol, err := st.CreateCollection(NewID(), alice.ID, "Alice shared", "", "", true)
 	if err != nil {
 		t.Fatalf("create alice collection: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestSharedComicCannotBeRelaundered(t *testing.T) {
 
 	// 2. Bob copies it into a collection of his own and shares that. He may: the
 	// comic is visible to him, and a collection is a view.
-	bobCol, err := st.CreateCollection(NewID(), bob.ID, "Bob shared", "", true)
+	bobCol, err := st.CreateCollection(NewID(), bob.ID, "Bob shared", "", "", true)
 	if err != nil {
 		t.Fatalf("create bob collection: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLibraryComicStaysVisibleInAnyonesCollection(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	col, err := st.CreateCollection(NewID(), alice.ID, "Alice's picks", "", true)
+	col, err := st.CreateCollection(NewID(), alice.ID, "Alice's picks", "", "", true)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestTagsArePerUser(t *testing.T) {
 	if err := st.UpsertComic(comic); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	col, err := st.CreateCollection(NewID(), alice.ID, "Shared", "", true)
+	col, err := st.CreateCollection(NewID(), alice.ID, "Shared", "", "", true)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestListComicsFilteredGatesCollection(t *testing.T) {
 	}
 	// A library comic is visible to Bob on its own, so only the collection gate
 	// can keep it out of a listing filtered by Alice's private collection.
-	private, err := st.CreateCollection(NewID(), alice.ID, "Alice private", "", false)
+	private, err := st.CreateCollection(NewID(), alice.ID, "Alice private", "", "", false)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

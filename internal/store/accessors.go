@@ -638,9 +638,18 @@ type ComicRow struct {
 // comic is claimable and whether the claim is the caller's. scanComics folds
 // them into api.Comic.Source and api.Comic.OwnedByMe rather than exposing the
 // owner's id, which is nobody's business but the server's.
-const comicCols = `comics.id,comics.path,comics.title,comics.series,comics.number,comics.volume,
+//
+// The title column is the effective title: a user-set title_override wins over
+// the scanned title, and an empty override falls through to it. This is a read
+// path (api.Comic), not the scanner's — ComicRow keeps the raw scanned title so
+// the scanner still diffs against what the file actually says.
+const comicCols = `comics.id,comics.path,` + effectiveTitle + `,comics.series,comics.number,comics.volume,
 	comics.summary,comics.page_count,comics.file_size,comics.added_at,comics.modified_at,comics.missing,
 	comics.owner_id,comics.source`
+
+// effectiveTitle is the display title expression: the override when set, else
+// the scanned title. Named once so the listing filter and the column list agree.
+const effectiveTitle = `COALESCE(NULLIF(comics.title_override,''),comics.title)`
 
 // UpsertComic inserts a comic or updates the existing row with the same path,
 // keeping its id so tags and progress stay attached across a rescan.
@@ -797,6 +806,22 @@ func (s *Store) UnclaimComic(userID string, isAdmin bool, comicID string) error 
 	return nil
 }
 
+// RenameComic sets a comic's title_override, which wins over the scanned title
+// everywhere the effective title is read. It does not gate on ownership — the
+// override is a server-wide field, so callers decide who may write it (an
+// upload's owner, a claim's claimer, or an admin) the same way DeleteComic's
+// caller does. Visibility is likewise the caller's to check first.
+func (s *Store) RenameComic(id, title string) error {
+	res, err := s.db.Exec(`UPDATE comics SET title_override=? WHERE id=?`, title, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteComic removes a comic row outright.
 func (s *Store) DeleteComic(id string) error {
 	res, err := s.db.Exec(`DELETE FROM comics WHERE id=?`, id)
@@ -903,8 +928,9 @@ func (s *Store) ListComicsFiltered(userID string, f ComicFilter) ([]api.Comic, i
 	}
 	if f.Query != "" {
 		// LIKE is case-insensitive over ASCII in SQLite by default, which is the
-		// behaviour a search box wants.
-		where = append(where, `(comics.title LIKE ? ESCAPE '\' OR comics.series LIKE ? ESCAPE '\')`)
+		// behaviour a search box wants. Matched against the effective title so a
+		// renamed comic is found by its new name, not the one on disk.
+		where = append(where, `(`+effectiveTitle+` LIKE ? ESCAPE '\' OR comics.series LIKE ? ESCAPE '\')`)
 		like := "%" + escapeLike(f.Query) + "%"
 		args = append(args, like, like)
 	}
@@ -1095,23 +1121,49 @@ func (s *Store) ListTags(userID string) ([]api.Tag, error) {
 
 // --- Collections ---
 
-// CreateCollection inserts a collection owned by userID.
-func (s *Store) CreateCollection(id, userID, name, summary string, shared bool) (api.Collection, error) {
+// Collection kinds. A reading list is a collection whose kind is 'readinglist';
+// they share every table and code path and differ only in which page lists them.
+const (
+	KindCollection  = "collection"
+	KindReadingList = "readinglist"
+)
+
+// CreateCollection inserts a collection owned by userID. kind is normalised: an
+// empty or unknown kind becomes a plain collection, so a caller cannot conjure a
+// third kind the UI has no page for.
+func (s *Store) CreateCollection(id, userID, name, summary, kind string, shared bool) (api.Collection, error) {
+	kind = normalizeKind(kind)
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`INSERT INTO collections(id,name,summary,owner_id,shared,created_at)
-		VALUES(?,?,?,?,?,?)`, id, name, summary, userID, boolInt(shared), now)
+	_, err := s.db.Exec(`INSERT INTO collections(id,name,summary,owner_id,shared,created_at,kind)
+		VALUES(?,?,?,?,?,?,?)`, id, name, summary, userID, boolInt(shared), now, kind)
 	if err != nil {
 		return api.Collection{}, err
 	}
-	return api.Collection{ID: id, Name: name, Summary: summary, OwnerID: userID, Shared: shared, CreatedAt: now}, nil
+	return api.Collection{ID: id, Name: name, Summary: summary, OwnerID: userID, Shared: shared, CreatedAt: now, Kind: kind}, nil
+}
+
+// normalizeKind folds anything that is not a known kind down to KindCollection.
+func normalizeKind(kind string) string {
+	if kind == KindReadingList {
+		return KindReadingList
+	}
+	return KindCollection
 }
 
 // visibleCollections is the collection-level counterpart of visibleComics: your
 // own, or somebody else's that they shared.
 const visibleCollections = `(collections.owner_id=? OR collections.shared=1)`
 
+// cover_comic_id falls back to the first comic in the collection's order when
+// the owner has not pinned one, so a non-empty collection always yields a cover.
+// The pinned id is kept even if that comic later leaves the collection: it was
+// a deliberate pick, and SetCollectionCover already checked it was visible.
 const collectionCols = `collections.id,collections.name,collections.summary,collections.owner_id,
-	users.name,collections.shared,collections.created_at,collections.cover_comic_id,
+	users.name,collections.shared,collections.created_at,
+	COALESCE(collections.cover_comic_id,
+		(SELECT cc.comic_id FROM collection_comics cc
+			WHERE cc.collection_id=collections.id ORDER BY cc.position LIMIT 1)),
+	collections.kind,
 	(SELECT COUNT(*) FROM collection_comics cc WHERE cc.collection_id=collections.id)`
 
 // GetCollection returns a collection userID may see.
@@ -1132,11 +1184,19 @@ func (s *Store) GetCollection(userID, id string) (api.Collection, error) {
 	return out[0], nil
 }
 
-// ListCollections returns collections userID may see.
-func (s *Store) ListCollections(userID string) ([]api.Collection, error) {
+// ListCollections returns collections userID may see. An empty kind returns
+// every kind; a non-empty one (KindCollection or KindReadingList) is what lets
+// the Collections and Reading lists pages each ask for only their own.
+func (s *Store) ListCollections(userID, kind string) ([]api.Collection, error) {
+	where := visibleCollections
+	args := []any{userID}
+	if kind != "" {
+		where += ` AND collections.kind=?`
+		args = append(args, normalizeKind(kind))
+	}
 	rows, err := s.db.Query(`SELECT `+collectionCols+` FROM collections
 		JOIN users ON users.id=collections.owner_id
-		WHERE `+visibleCollections+` ORDER BY collections.created_at DESC`, userID)
+		WHERE `+where+` ORDER BY collections.created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1151,7 +1211,7 @@ func scanCollections(rows *sql.Rows) ([]api.Collection, error) {
 		var shared int
 		var cover sql.NullString
 		if err := rows.Scan(&c.ID, &c.Name, &c.Summary, &c.OwnerID, &c.OwnerName,
-			&shared, &c.CreatedAt, &cover, &c.Count); err != nil {
+			&shared, &c.CreatedAt, &cover, &c.Kind, &c.Count); err != nil {
 			return nil, err
 		}
 		c.Shared = shared != 0

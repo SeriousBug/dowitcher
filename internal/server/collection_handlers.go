@@ -10,9 +10,11 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/store"
 )
 
+// handleListCollections lists collections, optionally narrowed to one kind via
+// ?kind=collection|readinglist so the two pages each fetch only their own.
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
-	cols, err := s.store.ListCollections(u.ID)
+	cols, err := s.store.ListCollections(u.ID, r.URL.Query().Get("kind"))
 	if err != nil {
 		log.Printf("list collections: %v", err)
 		writeErr(w, http.StatusInternalServerError, "db error")
@@ -43,7 +45,7 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "a collection needs a name")
 		return
 	}
-	col, err := s.store.CreateCollection(store.NewID(), u.ID, req.Name, req.Summary, req.Shared)
+	col, err := s.store.CreateCollection(store.NewID(), u.ID, req.Name, req.Summary, req.Kind, req.Shared)
 	if err != nil {
 		log.Printf("create collection: %v", err)
 		writeErr(w, http.StatusInternalServerError, "db error")
@@ -115,6 +117,33 @@ func (s *Server) handleRemoveFromCollection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeOK(w)
+}
+
+// handleSetCollectionCover pins the comic whose cover represents the collection.
+// The store checks the caller owns the collection and can see the comic; the
+// same not-found mapping as every other mutation covers both misses.
+func (s *Server) handleSetCollectionCover(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	var req api.CollectionComicRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if req.ComicID == "" {
+		writeErr(w, http.StatusBadRequest, "no comic given")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.SetCollectionCover(u.ID, id, req.ComicID); err != nil {
+		writeCollectionErr(w, err)
+		return
+	}
+	col, err := s.store.GetCollection(u.ID, id)
+	if err != nil {
+		writeCollectionErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, col)
 }
 
 func (s *Server) handleReorderCollection(w http.ResponseWriter, r *http.Request) {

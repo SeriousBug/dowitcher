@@ -148,46 +148,103 @@ func (s *Server) listTags(ctx context.Context, _ *mcp.CallToolRequest, _ struct{
 
 // --- tag_comic / untag_comic ---
 
+// TagComicInput tags or untags a set of comics in one call. comicIds is a list
+// so "tag these forty issues as read" is one tool call rather than forty: the
+// tags apply to every comic named, and every comic is fetched, merged and
+// written on its own so one unseen id does not sink the rest.
 type TagComicInput struct {
-	ComicID string   `json:"comicId" jsonschema:"id of the comic to tag"`
-	Tags    []string `json:"tags" jsonschema:"one or more tag names to add"`
+	ComicIDs []string `json:"comicIds" jsonschema:"ids of the comics to tag or untag"`
+	Tags     []string `json:"tags" jsonschema:"one or more tag names to add or remove"`
+}
+
+// BulkTagOutput reports what a bulk tag/untag actually touched: the comics that
+// were updated, plus the ids that could not be seen so the caller learns which
+// of a long list was skipped rather than getting a bare error for the batch.
+type BulkTagOutput struct {
+	Comics  []comicView `json:"comics"`
+	Skipped []string    `json:"skipped,omitempty" jsonschema:"ids that were not found or not visible to you"`
 }
 
 // tagComic adds tags without dropping the ones already there: the store's tag
 // write replaces the caller's whole set on a comic, so an add has to read the
 // current set and union the new names in. This is what makes "tag everything as
 // read" not silently strip whatever else was on each comic.
-func (s *Server) tagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, ComicOutput, error) {
-	u, ok := callerFrom(ctx)
-	if !ok {
-		return nil, ComicOutput{}, errNoUser
-	}
-	c, err := s.store.GetComic(u.ID, in.ComicID)
-	if err != nil {
-		return nil, ComicOutput{}, notFoundOr(err, "comic")
-	}
-	merged := mergeTags(c.Tags, in.Tags, nil)
-	if err := s.store.SetComicTags(u.ID, in.ComicID, merged); err != nil {
-		return nil, ComicOutput{}, dbErr(err)
-	}
-	updated, err := s.store.GetComic(u.ID, in.ComicID)
-	if err != nil {
-		return nil, ComicOutput{}, dbErr(err)
-	}
-	return nil, ComicOutput{Comic: viewComic(updated)}, nil
+func (s *Server) tagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, BulkTagOutput, error) {
+	return s.bulkTag(ctx, in, false)
 }
 
-func (s *Server) untagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, ComicOutput, error) {
+func (s *Server) untagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, BulkTagOutput, error) {
+	return s.bulkTag(ctx, in, true)
+}
+
+// bulkTag applies one add-or-remove of the same tag set across every comic named.
+// remove flips it from union to difference. A comic the caller cannot see is
+// recorded in Skipped rather than failing the batch, so a stray id in a long
+// list does not undo the comics that did get tagged.
+func (s *Server) bulkTag(ctx context.Context, in TagComicInput, remove bool) (*mcp.CallToolResult, BulkTagOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, BulkTagOutput{}, errNoUser
+	}
+	out := BulkTagOutput{Comics: []comicView{}}
+	for _, id := range in.ComicIDs {
+		c, err := s.store.GetComic(u.ID, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out.Skipped = append(out.Skipped, id)
+				continue
+			}
+			return nil, BulkTagOutput{}, dbErr(err)
+		}
+		var next []string
+		if remove {
+			next = mergeTags(c.Tags, nil, in.Tags)
+		} else {
+			next = mergeTags(c.Tags, in.Tags, nil)
+		}
+		if err := s.store.SetComicTags(u.ID, id, next); err != nil {
+			return nil, BulkTagOutput{}, dbErr(err)
+		}
+		updated, err := s.store.GetComic(u.ID, id)
+		if err != nil {
+			return nil, BulkTagOutput{}, dbErr(err)
+		}
+		out.Comics = append(out.Comics, viewComic(updated))
+	}
+	return nil, out, nil
+}
+
+// --- rename_comic ---
+
+type RenameComicInput struct {
+	ComicID string `json:"comicId" jsonschema:"id of the comic to rename"`
+	Title   string `json:"title" jsonschema:"the new display title"`
+}
+
+// renameComic sets a comic's display title. The same rule as the HTTP layer: the
+// owner of an upload or claim may rename it, and an admin may rename anything.
+// The HTTP handler reads this off the row; here it is checked explicitly, the
+// same shape as claim's admin gate.
+func (s *Server) renameComic(ctx context.Context, _ *mcp.CallToolRequest, in RenameComicInput) (*mcp.CallToolResult, ComicOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
 		return nil, ComicOutput{}, errNoUser
 	}
-	c, err := s.store.GetComic(u.ID, in.ComicID)
-	if err != nil {
+	if _, err := s.store.GetComic(u.ID, in.ComicID); err != nil {
 		return nil, ComicOutput{}, notFoundOr(err, "comic")
 	}
-	remaining := mergeTags(c.Tags, nil, in.Tags)
-	if err := s.store.SetComicTags(u.ID, in.ComicID, remaining); err != nil {
+	row, err := s.store.ComicRowByID(in.ComicID)
+	if err != nil {
+		return nil, ComicOutput{}, dbErr(err)
+	}
+	if row.OwnerID != u.ID && !u.IsAdmin {
+		return nil, ComicOutput{}, errors.New("only the owner or an admin can rename this comic")
+	}
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		return nil, ComicOutput{}, errors.New("title is required")
+	}
+	if err := s.store.RenameComic(in.ComicID, title); err != nil {
 		return nil, ComicOutput{}, dbErr(err)
 	}
 	updated, err := s.store.GetComic(u.ID, in.ComicID)
@@ -199,16 +256,20 @@ func (s *Server) untagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagC
 
 // --- list_collections / create_collection / add_to_collection ---
 
+type ListCollectionsInput struct {
+	Kind string `json:"kind,omitempty" jsonschema:"limit to one kind: 'collection' or 'readinglist'; omit for both"`
+}
+
 type ListCollectionsOutput struct {
 	Collections []api.Collection `json:"collections"`
 }
 
-func (s *Server) listCollections(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, ListCollectionsOutput, error) {
+func (s *Server) listCollections(ctx context.Context, _ *mcp.CallToolRequest, in ListCollectionsInput) (*mcp.CallToolResult, ListCollectionsOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
 		return nil, ListCollectionsOutput{}, errNoUser
 	}
-	cols, err := s.store.ListCollections(u.ID)
+	cols, err := s.store.ListCollections(u.ID, in.Kind)
 	if err != nil {
 		return nil, ListCollectionsOutput{}, dbErr(err)
 	}
@@ -222,6 +283,7 @@ type CreateCollectionInput struct {
 	Name    string `json:"name" jsonschema:"name of the collection"`
 	Summary string `json:"summary,omitempty" jsonschema:"optional description"`
 	Shared  bool   `json:"shared,omitempty" jsonschema:"if true, every user on the server can read it; default false"`
+	Kind    string `json:"kind,omitempty" jsonschema:"'collection' (default) or 'readinglist' for an ordered reading list"`
 }
 
 type CollectionOutput struct {
@@ -237,7 +299,99 @@ func (s *Server) createCollection(ctx context.Context, _ *mcp.CallToolRequest, i
 	if name == "" {
 		return nil, CollectionOutput{}, errors.New("name is required")
 	}
-	col, err := s.store.CreateCollection(store.NewID(), u.ID, name, strings.TrimSpace(in.Summary), in.Shared)
+	col, err := s.store.CreateCollection(store.NewID(), u.ID, name, strings.TrimSpace(in.Summary), in.Kind, in.Shared)
+	if err != nil {
+		return nil, CollectionOutput{}, dbErr(err)
+	}
+	return nil, CollectionOutput{Collection: col}, nil
+}
+
+// --- update_collection / delete_collection ---
+
+type UpdateCollectionInput struct {
+	CollectionID string  `json:"collectionId" jsonschema:"id of one of your own collections"`
+	Name         *string `json:"name,omitempty" jsonschema:"new name; omit to leave unchanged"`
+	Summary      *string `json:"summary,omitempty" jsonschema:"new description; omit to leave unchanged"`
+	Shared       *bool   `json:"shared,omitempty" jsonschema:"share with everyone (true) or make private (false); omit to leave unchanged"`
+}
+
+func (s *Server) updateCollection(ctx context.Context, _ *mcp.CallToolRequest, in UpdateCollectionInput) (*mcp.CallToolResult, CollectionOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, CollectionOutput{}, errNoUser
+	}
+	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
+		return nil, CollectionOutput{}, errors.New("name cannot be blank")
+	}
+	req := api.UpdateCollectionRequest{Name: in.Name, Summary: in.Summary, Shared: in.Shared}
+	if err := s.store.UpdateCollection(u.ID, in.CollectionID, req); err != nil {
+		return nil, CollectionOutput{}, notFoundOr(err, "collection")
+	}
+	col, err := s.store.GetCollection(u.ID, in.CollectionID)
+	if err != nil {
+		return nil, CollectionOutput{}, dbErr(err)
+	}
+	return nil, CollectionOutput{Collection: col}, nil
+}
+
+type CollectionIDInput struct {
+	CollectionID string `json:"collectionId" jsonschema:"id of one of your own collections"`
+}
+
+func (s *Server) deleteCollection(ctx context.Context, _ *mcp.CallToolRequest, in CollectionIDInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	if err := s.store.DeleteCollection(u.ID, in.CollectionID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "collection")
+	}
+	return nil, okOutput{OK: true}, nil
+}
+
+// --- remove_from_collection / reorder_collection / set_collection_cover ---
+
+func (s *Server) removeFromCollection(ctx context.Context, _ *mcp.CallToolRequest, in AddToCollectionInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	if err := s.store.RemoveFromCollection(u.ID, in.CollectionID, in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "collection or comic")
+	}
+	return nil, okOutput{OK: true}, nil
+}
+
+type ReorderCollectionInput struct {
+	CollectionID string   `json:"collectionId" jsonschema:"id of one of your own collections"`
+	ComicIDs     []string `json:"comicIds" jsonschema:"the collection's comic ids in the order you want them"`
+}
+
+func (s *Server) reorderCollection(ctx context.Context, _ *mcp.CallToolRequest, in ReorderCollectionInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	if err := s.store.ReorderCollection(u.ID, in.CollectionID, in.ComicIDs); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "collection")
+	}
+	return nil, okOutput{OK: true}, nil
+}
+
+type SetCoverInput struct {
+	CollectionID string `json:"collectionId" jsonschema:"id of one of your own collections"`
+	ComicID      string `json:"comicId" jsonschema:"id of a comic in the collection to use as its cover"`
+}
+
+func (s *Server) setCollectionCover(ctx context.Context, _ *mcp.CallToolRequest, in SetCoverInput) (*mcp.CallToolResult, CollectionOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, CollectionOutput{}, errNoUser
+	}
+	if err := s.store.SetCollectionCover(u.ID, in.CollectionID, in.ComicID); err != nil {
+		return nil, CollectionOutput{}, notFoundOr(err, "collection or comic")
+	}
+	col, err := s.store.GetCollection(u.ID, in.CollectionID)
 	if err != nil {
 		return nil, CollectionOutput{}, dbErr(err)
 	}
