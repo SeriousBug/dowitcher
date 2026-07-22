@@ -98,7 +98,10 @@ mounting it read-only is supported. Everything dowitcher derives from library co
 `DOWITCHER_DATA` instead: cover thumbnails, and the CBZs converted from PDFs dropped in the folder.
 A dropped PDF becomes a `source='library-pdf'` comic — server-wide like a `library` comic, but its
 CBZ lives in the uploads (data) dir and the scanner does not manage it (`imports.runLibraryPDF`).
-The source PDF is left in place, so that conversion dedupes by content hash, not by deleting it.
+The source PDF is left in place, so the "already converted" memory is the finished import job for
+that path (`store.HasImportedInput`), which is why those job records are exempt from the
+clear-finished-imports sweep (`keepImportedLibraryPDF`). Deleting a library-pdf comic is therefore
+permanent — the job record keeps the next scan from re-importing it.
 
 `comics.source` is what decides server-wide, not a NULL `owner_id`: an admin can **claim** a
 library comic (`POST /api/comics/{id}/claim`), which sets `owner_id` and flips the source from

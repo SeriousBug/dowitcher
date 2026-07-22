@@ -220,8 +220,9 @@ func TestLibraryPDFConversion(t *testing.T) {
 
 // TestLibraryPDFReimportDeduped: the source PDF is never deleted, so a later
 // hand-off of the same file (a restart re-scanning the folder) must not produce a
-// second comic. The enqueue-time skip covers the common case; here the job
-// history is wiped first to force the content-hash backstop at filing time.
+// second comic. Clearing the import list must not break this: the successful
+// library-pdf record is the library's memory that the PDF was already converted,
+// so it survives the clear and keeps the re-import from happening.
 func TestLibraryPDFReimportDeduped(t *testing.T) {
 	m, st, _, _ := testManager(t)
 	runWorkers(t, m)
@@ -241,20 +242,21 @@ func TestLibraryPDFReimportDeduped(t *testing.T) {
 		return false
 	})
 
-	// Clear the job history so the enqueue-time skip cannot see the earlier import;
-	// only the content-hash check at filing time can now catch the duplicate.
+	// An admin clearing the finished-imports list must not wipe the dedupe record.
 	if err := st.DeleteFinishedImportJobs("", true); err != nil {
 		t.Fatalf("clear jobs: %v", err)
 	}
-
-	m.EnqueueLibraryPDF(pdfPath)
-	waitFor(t, "the second conversion to finish", func() bool {
-		jobs, _ := st.ListAllImportJobs(20)
-		return len(jobs) == 1 && jobs[0].Stage == api.StageDone
-	})
 	jobs, _ := st.ListAllImportJobs(20)
-	if got := jobs[0].ComicID; got != firstID {
-		t.Fatalf("the re-import must point at the existing comic %q, got %q", firstID, got)
+	if len(jobs) != 1 || jobs[0].ComicID != firstID {
+		t.Fatalf("the successful library-pdf record must survive a clear, got %#v", jobs)
+	}
+
+	// Re-handing off the untouched PDF (a restart re-scanning the folder) is skipped
+	// by that surviving record, so no second job and no second comic appear.
+	m.EnqueueLibraryPDF(pdfPath)
+	jobs, _ = st.ListAllImportJobs(20)
+	if len(jobs) != 1 {
+		t.Fatalf("an already-imported PDF must not be re-queued, got %d jobs", len(jobs))
 	}
 	comics, err := st.ListComics("")
 	if err != nil {

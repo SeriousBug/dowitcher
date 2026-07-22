@@ -1518,14 +1518,22 @@ func (s *Store) ListAllImportJobs(limit int) ([]api.ImportJob, error) {
 }
 
 // DeleteFinishedImportJobs removes a user's finished jobs. all clears every
-// finished job regardless of owner (including ownerless library-pdf jobs), for
-// an admin.
+// finished job regardless of owner, for an admin.
+//
+// A successful library-pdf job is exempt from both: it is not a mere audit line
+// but the record that remembers a PDF still sitting in the read-only library
+// folder was already converted. The source file is never deleted, so this row is
+// the only thing standing between "already imported" and re-converting it on the
+// next scan; clearing the visible import list must not take the library's memory
+// with it. A failed library-pdf job carries no comic and is fair game to clear.
+const keepImportedLibraryPDF = ` AND NOT (kind='library-pdf' AND comic_id IS NOT NULL)`
+
 func (s *Store) DeleteFinishedImportJobs(ownerID string, all bool) error {
 	if all {
-		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0`)
+		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0` + keepImportedLibraryPDF)
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`, ownerID)
+	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`+keepImportedLibraryPDF, ownerID)
 	return err
 }
 
@@ -1553,16 +1561,17 @@ func (s *Store) HasUnfinishedImportJobForInput(inputPath string) (bool, error) {
 // inputPath. It is the library-pdf importer's cross-restart skip: the source PDF
 // stays on its read-only mount, so every restart re-hands it off, and re-running
 // the conversion each time would be pure waste. A failed job (comic_id='') does
-// not count — a PDF that failed last time is meant to be retried. The content-hash
-// check at filing time is the correctness backstop for the case where the job
-// history was cleared out from under this.
+// not count — a PDF that failed last time is meant to be retried. These records
+// are protected from the "clear finished imports" action (see
+// keepImportedLibraryPDF), so this memory survives; the content-hash check at
+// filing time is the last-resort backstop if a record is lost some other way.
 func (s *Store) HasImportedInput(inputPath string) (bool, error) {
 	if inputPath == "" {
 		return false, nil
 	}
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM import_jobs
-		WHERE input_path=? AND comic_id<>'' AND finished_at<>0 LIMIT 1`, inputPath).Scan(&id)
+		WHERE input_path=? AND comic_id IS NOT NULL AND finished_at<>0 LIMIT 1`, inputPath).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

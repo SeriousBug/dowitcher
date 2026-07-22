@@ -470,8 +470,10 @@ func (m *Manager) EnqueueLibraryPDF(pdfPath string) {
 	}
 	// The source PDF is never deleted (its folder is read-only), so every scan
 	// after a restart hands the same file off again. If a past run already turned
-	// this PDF into a comic, skip it rather than re-run the conversion; the filing
-	// step's content-hash check is the backstop if this history was cleared.
+	// this PDF into a comic, skip it rather than re-run the conversion. This record
+	// is protected from the clear-finished-imports action, so it is durable; the
+	// filing step's content-hash check is the last-resort backstop if it is lost
+	// some other way.
 	if has, err := m.store.HasImportedInput(pdfPath); err != nil {
 		m.mu.Unlock()
 		log.Printf("library-pdf: import check %s: %v", pdfPath, err)
