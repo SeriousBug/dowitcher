@@ -555,18 +555,30 @@ func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if row.Source != store.SourceUpload {
+	switch row.Source {
+	case store.SourceUpload:
+		// Visibility got them this far; a shared collection is not a licence to
+		// delete somebody's upload.
+		if row.OwnerID != u.ID && !u.IsAdmin {
+			writeErr(w, http.StatusForbidden, "only the uploader can delete an upload")
+			return
+		}
+	case store.SourceLibraryPDF:
+		// A library-pdf comic is server-wide and its CBZ is server-managed in the
+		// data dir, so deleting it is a real, deletable action — unlike a library
+		// comic. It belongs to no one, so only an admin may remove it. The source
+		// PDF is left untouched on its read-only mount; the content-hash dedupe is
+		// what keeps a later restart from re-importing it.
+		if !u.IsAdmin {
+			writeErr(w, http.StatusForbidden, "only an admin can delete a server-wide comic")
+			return
+		}
+	default:
 		// The library folder is the source of truth for what is in it. Dropping
 		// the row would delete the tags and reading progress and then resurrect
 		// the comic, stripped, on the next scan. Removing a library comic means
 		// removing its file.
 		writeErr(w, http.StatusBadRequest, "library comics are managed from the library folder, not here")
-		return
-	}
-	// Visibility got them this far; a shared collection is not a licence to
-	// delete somebody's upload.
-	if row.OwnerID != u.ID && !u.IsAdmin {
-		writeErr(w, http.StatusForbidden, "only the uploader can delete an upload")
 		return
 	}
 	if err := s.store.DeleteComic(comic.ID); err != nil {
@@ -711,9 +723,10 @@ func (s *Server) comicRow(w http.ResponseWriter, id string) (store.ComicRow, boo
 // comicFile turns a stored row into a file to open. Paths are stored relative to
 // the root they came from, so a container's mount points can move without
 // rewriting the database. A claimed comic's file never moved out of the library
-// root, so only an upload resolves anywhere else.
+// root; an upload and a library-pdf conversion both live in the writable uploads
+// dir, so only those two resolve anywhere other than the library root.
 func (s *Server) comicFile(row store.ComicRow) string {
-	if row.Source == store.SourceUpload {
+	if row.Source == store.SourceUpload || row.Source == store.SourceLibraryPDF {
 		return filepath.Join(s.cfg.UploadsDir, row.Path)
 	}
 	return filepath.Join(s.cfg.LibraryRoot, row.Path)

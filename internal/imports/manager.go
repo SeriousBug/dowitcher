@@ -39,10 +39,13 @@ const (
 	// kindPDF is an uploaded PDF: its page images are extracted, then run through
 	// the same pipeline, and the result is filed as the uploader's comic.
 	kindPDF = "pdf"
-	// kindLibraryPDF is a PDF dropped into the watched library folder. It is
-	// converted to a CBZ written beside it inside the library root and the PDF is
-	// deleted; no comic row is filed — the scanner adopts the CBZ as a server-wide
-	// library comic. Such a job is ownerless and visible only to admins.
+	// kindLibraryPDF is a PDF dropped into the watched library folder. Its page
+	// images are extracted and packed into a CBZ written to the uploads (data)
+	// dir, then filed directly as an ownerless, server-wide comic
+	// (store.SourceLibraryPDF). The library root is read-only by contract, so
+	// nothing is written to it and the source PDF is left in place — a content-hash
+	// dedupe keeps that from re-importing on the next scan. Such a job is ownerless
+	// and visible only to admins.
 	kindLibraryPDF = "library-pdf"
 )
 
@@ -465,6 +468,20 @@ func (m *Manager) EnqueueLibraryPDF(pdfPath string) {
 		m.mu.Unlock()
 		return
 	}
+	// The source PDF is never deleted (its folder is read-only), so every scan
+	// after a restart hands the same file off again. If a past run already turned
+	// this PDF into a comic, skip it rather than re-run the conversion. This record
+	// is protected from the clear-finished-imports action, so it is durable; the
+	// filing step's content-hash check is the last-resort backstop if it is lost
+	// some other way.
+	if has, err := m.store.HasImportedInput(pdfPath); err != nil {
+		m.mu.Unlock()
+		log.Printf("library-pdf: import check %s: %v", pdfPath, err)
+		return
+	} else if has {
+		m.mu.Unlock()
+		return
+	}
 	j.QueueSeq = int(m.seq)
 	m.seq++
 	m.live[j.ID] = &liveJob{snap: j, inputPath: pdfPath, optionsJSON: optsJSON}
@@ -594,12 +611,13 @@ func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string,
 	os.RemoveAll(pdfDir)
 }
 
-// runLibraryPDF converts a PDF dropped in the library folder into a CBZ written
-// beside it, then deletes the PDF. It files no comic row: the scanner picks the
-// CBZ up as a server-wide library comic. Writing to a hidden same-dir temp name
-// and renaming into place keeps the watcher from ever seeing a half-written CBZ.
+// runLibraryPDF converts a PDF dropped in the library folder into a CBZ in the
+// uploads (data) dir and files it as an ownerless, server-wide comic. The library
+// root is read-only by contract, so the PDF's folder is never written to: the CBZ
+// goes to writable storage and the source PDF is left exactly where it was. That
+// makes the conversion idempotent by content hash rather than by removing the
+// source, which is what lets a read-only library mount work at all.
 func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
-	libDir := filepath.Dir(pdfPath)
 	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-libpdf-*")
 	if err != nil {
 		log.Printf("library-pdf %s: temp dir: %v", job.ID, err)
@@ -618,16 +636,16 @@ func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath 
 		return
 	}
 
-	base := strings.TrimSuffix(filepath.Base(pdfPath), filepath.Ext(pdfPath))
 	if opts.Name == "" {
-		opts.Name = base
+		opts.Name = strings.TrimSuffix(filepath.Base(pdfPath), filepath.Ext(pdfPath))
 	}
-	// A hidden name (leading dot) so the watcher's isCandidate skips it while it
-	// is being written; the .cbz suffix keeps the pipeline from appending one.
-	tmpPath := filepath.Join(libDir, "."+store.NewID()+".cbz")
-	res, err := Run(ctx, srcDir, tmpPath, opts, m.progress(job.ID))
+	// The comic's id names its file, the same as an ordinary upload: a chosen name
+	// would collide with the unique path index the moment two PDFs share a title.
+	comicID := store.NewID()
+	outPath := filepath.Join(m.cfg.UploadsDir, comicID+".cbz")
+	res, err := Run(ctx, srcDir, outPath, opts, m.progress(job.ID))
 	if err != nil {
-		os.Remove(tmpPath)
+		os.Remove(outPath)
 		if m.drained(err) {
 			m.requeueForRestart(job.ID)
 			return
@@ -637,33 +655,60 @@ func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath 
 		return
 	}
 
-	outPath := freeCBZPath(libDir, base)
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		os.Remove(tmpPath)
-		log.Printf("library-pdf %s: rename into library: %v", job.ID, err)
-		m.Fail(job.ID, "the converted CBZ could not be written to the library")
+	if err := m.fileLibraryPDF(job, comicID, outPath, res); err != nil {
+		os.Remove(outPath)
+		log.Printf("library-pdf %s: file: %v", job.ID, err)
+		m.Fail(job.ID, "the comic was built but could not be added to the library")
 		return
 	}
-	// Confirm the CBZ is on disk before deleting the source: the whole point of
-	// the folder-PDF flow is that the original is not lost until its replacement
-	// is real.
-	if _, err := os.Stat(outPath); err != nil {
-		log.Printf("library-pdf %s: confirm output: %v", job.ID, err)
-		m.Fail(job.ID, "the converted CBZ vanished before it could be confirmed")
-		return
+}
+
+// fileLibraryPDF records a converted library PDF as an ownerless, server-wide
+// comic. It reads the metadata back from the CBZ so a library-pdf comic and an
+// upload are described by the same code, and it dedupes on content hash: because
+// the source PDF is never deleted, an unchanged file re-handed off after a
+// history wipe would otherwise be filed a second time. On a hash hit the fresh
+// CBZ is discarded and the job points at the comic that already exists.
+func (m *Manager) fileLibraryPDF(job api.ImportJob, comicID, outPath string, res *Result) error {
+	a, err := cbz.Open(outPath)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(pdfPath); err != nil {
-		log.Printf("library-pdf %s: remove source pdf: %v", job.ID, err)
+	c := cbz.Comic(a)
+	hash := a.Hash()
+	a.Close()
+
+	if existing, err := m.store.ServerWideComicByHash(hash); err == nil {
+		os.Remove(outPath)
+		m.finish(job.ID, func(j *api.ImportJob) {
+			j.Stage = api.StageDone
+			j.ComicID = existing.ID
+			j.PageCount = res.PageCount
+			j.Done, j.Total = res.PageCount, res.PageCount
+		})
+		return nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
 	}
 
+	row := comicRow(comicID, "", outPath, c, hash, res.PageCount, res.OutBytes)
+	row.Source = store.SourceLibraryPDF
+	if err := m.store.UpsertComic(row); err != nil {
+		return err
+	}
+	if err := m.writeReport(job.ID, res.Groups); err != nil {
+		log.Printf("library-pdf %s: write dupe report: %v", job.ID, err)
+	}
 	m.finish(job.ID, func(j *api.ImportJob) {
 		j.Stage = api.StageDone
+		j.ComicID = comicID
 		j.PageCount = res.PageCount
 		j.SourceCount = res.SourceCount
 		j.ExactDupes = res.ExactDupes
 		j.NearDupes = res.NearDupes
 		j.Done, j.Total = res.PageCount, res.PageCount
 	})
+	return nil
 }
 
 // run is the folder-import goroutine body: pipeline, then file the result.
@@ -1116,21 +1161,6 @@ func failMessage(err error) string {
 		return fmt.Sprintf("this folder has more than %d images; import it as separate books", maxFiles)
 	}
 	return "the import failed; the server log has the details"
-}
-
-// freeCBZPath finds an unused "<base>.cbz" under dir, appending " (1)", " (2)"…
-// until one is free, so a converted PDF never clobbers an existing library file.
-func freeCBZPath(dir, base string) string {
-	for i := 0; ; i++ {
-		name := base + ".cbz"
-		if i > 0 {
-			name = fmt.Sprintf("%s (%d).cbz", base, i)
-		}
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			return p
-		}
-	}
 }
 
 // pathExists reports whether a staged input is still on disk, for restart
