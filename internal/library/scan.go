@@ -29,7 +29,7 @@ func (l *Library) Scan(ctx context.Context) error {
 	}
 	defer l.scanning.Unlock()
 
-	files, pdfs, err := l.walk(ctx)
+	files, converts, err := l.walk(ctx)
 	if err != nil {
 		return err
 	}
@@ -81,14 +81,15 @@ func (l *Library) Scan(ctx context.Context) error {
 		l.finish()
 		return err
 	}
-	// PDFs are handed off after the CBZ reconcile pass, not woven into it: a PDF
-	// is not a comic row, it is work for the import queue, and the dedupe map
-	// keeps a re-walk from re-queuing one that has not changed.
-	for _, rel := range pdfs {
+	// Convertibles (PDFs and non-zip archives) are handed off after the CBZ
+	// reconcile pass, not woven into it: they are not comic rows, they are work for
+	// the import queue, and the dedupe map keeps a re-walk from re-queuing one that
+	// has not changed.
+	for _, rel := range converts {
 		if ctx.Err() != nil {
 			break
 		}
-		l.handlePDF(rel)
+		l.handleConvert(rel)
 	}
 	l.finish()
 	return nil
@@ -135,9 +136,9 @@ func (l *Library) markMissing(seen map[string]bool) error {
 }
 
 // walk lists the files under the root as slash-separated paths relative to it:
-// the CBZ/ZIP candidates the scanner reconciles, and separately the PDFs handed
-// to the import queue.
-func (l *Library) walk(ctx context.Context) (files, pdfs []string, err error) {
+// the CBZ/ZIP candidates the scanner reconciles, and separately the convertibles
+// (PDFs and non-zip archives) handed to the import queue.
+func (l *Library) walk(ctx context.Context) (files, converts []string, err error) {
 	err = filepath.WalkDir(l.cfg.Root, func(p string, d fs.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -165,15 +166,15 @@ func (l *Library) walk(ctx context.Context) (files, pdfs []string, err error) {
 		switch {
 		case isCandidate(d.Name()):
 			files = append(files, filepath.ToSlash(rel))
-		case isPDF(d.Name()):
-			pdfs = append(pdfs, filepath.ToSlash(rel))
+		case isConvertible(d.Name()):
+			converts = append(converts, filepath.ToSlash(rel))
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	return files, pdfs, nil
+	return files, converts, nil
 }
 
 // skipDir excludes directories that never hold a library comic: dotfile

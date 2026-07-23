@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toaster } from "./toaster";
-import { isCBZ, isImage, isPDF, pathOf, uploadWithProgress } from "./upload";
+import { isArchive, isCBZ, isImage, isPDF, pathOf, uploadWithProgress } from "./upload";
 import type { Comic, ImportOptions } from "../api/generated";
 
 /**
@@ -11,8 +11,8 @@ import type { Comic, ImportOptions } from "../api/generated";
  *
  * - a CBZ/ZIP is already a book — it goes to POST /api/comics and is on the
  *   shelf by the time the request returns;
- * - a PDF is unpacked server-side into page images, so it goes to POST
- *   /api/imports as a job to watch;
+ * - a PDF or a non-zip archive (CBR/CB7/CBT) is unpacked server-side into page
+ *   images, so it goes to POST /api/imports as a job to watch;
  * - loose images are one book between them — the folder-of-images case — and go
  *   to POST /api/imports as a single import.
  *
@@ -34,9 +34,9 @@ interface UseComicUploadsOptions {
   collectionId?: string;
 }
 
-/** One unit of upload work: a single archive/PDF, or all the images together. */
+/** One unit of upload work: a single CBZ/PDF/archive, or all the images together. */
 interface WorkItem {
-  kind: "cbz" | "pdf" | "images";
+  kind: "cbz" | "pdf" | "archive" | "images";
   name: string;
   files: File[];
 }
@@ -53,6 +53,8 @@ function classify(files: File[]): WorkItem[] {
       items.push({ kind: "cbz", name: stripExt(file.name, /\.(cbz|zip)$/i), files: [file] });
     } else if (isPDF(file)) {
       items.push({ kind: "pdf", name: stripExt(file.name, /\.pdf$/i), files: [file] });
+    } else if (isArchive(file)) {
+      items.push({ kind: "archive", name: stripExt(file.name, /\.(cbr|rar|cb7|7z|cbt|tar)$/i), files: [file] });
     } else if (isImage(file)) {
       images.push(file);
     }
@@ -90,7 +92,7 @@ export function useComicUploads({ collectionId }: UseComicUploadsOptions = {}) {
         toaster.create({
           type: "error",
           title: "Nothing to upload there",
-          description: "Drop a CBZ, a PDF, or a folder of images.",
+          description: "Drop a CBZ, CBR, CB7, CBT, a PDF, or a folder of images.",
         });
         return;
       }
@@ -109,7 +111,7 @@ export function useComicUploads({ collectionId }: UseComicUploadsOptions = {}) {
             const body: Partial<ImportOptions> = { name: item.name, collectionId };
             form.append("options", new Blob([JSON.stringify(body)], { type: "application/json" }), "options.json");
             form.append("file", item.files[0], item.files[0].name);
-          } else if (item.kind === "pdf") {
+          } else if (item.kind === "pdf" || item.kind === "archive") {
             const body: Partial<ImportOptions> = { name: item.name, collectionId };
             form.append("options", new Blob([JSON.stringify(body)], { type: "application/json" }), "options.json");
             form.append("files", item.files[0], item.files[0].name);

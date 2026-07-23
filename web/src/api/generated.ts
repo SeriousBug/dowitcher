@@ -107,11 +107,12 @@ export interface Comic {
    */
   tags: string[];
   /**
-   * Source is where the comic came from: "library", "upload", "claimed", or
+   * Source is where the comic came from: "library", "upload", "claimed",
    * "library-pdf" (a PDF dropped in the library folder, converted to a
-   * server-wide comic whose file lives in the data dir). The client needs it to
-   * know which comics an admin may claim, and the reader needs nothing else from
-   * it. The owner's id stays server-side.
+   * server-wide comic whose file lives in the data dir), or "library-archive"
+   * (the same for a dropped CBR/CB7/CBT). The client needs it to know which
+   * comics an admin may claim, and the reader needs nothing else from it. The
+   * owner's id stays server-side.
    */
   source: string;
   /**
@@ -324,9 +325,10 @@ export interface ImportJob {
   startedAt: number /* int64 */;
   finishedAt?: number /* int64 */;
   /**
-   * Kind is how the job is processed: "folder" (images), "pdf" (uploaded PDF)
-   * or "library-pdf" (a PDF dropped into the watched library folder, converted
-   * to a server-wide CBZ). The UI badges a library-pdf job apart.
+   * Kind is how the job is processed: "folder" (images), "pdf" (uploaded PDF),
+   * "archive" (uploaded CBR/CB7/CBT), "library-pdf" (a PDF dropped into the
+   * watched library folder, converted to a server-wide CBZ) or "library-archive"
+   * (the same for a dropped CBR/CB7/CBT). The UI badges the library-* jobs apart.
    */
   kind: string;
   /**

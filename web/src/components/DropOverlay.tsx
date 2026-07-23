@@ -6,7 +6,7 @@ import { filesFromDrop } from "../lib/upload";
 import { useComicUploads } from "../lib/useComicUploads";
 
 /**
- * Wraps a page so a CBZ, PDF, or folder of images dropped anywhere over it is
+ * Wraps a page so a CBZ, CBR/CB7/CBT, PDF, or folder of images dropped anywhere over it is
  * uploaded, showing a dashed overlay while a drag is in progress and while the
  * upload runs. Shared by the Library and Collection pages; the Import page keeps
  * its own richer picker.
@@ -133,7 +133,7 @@ export function DropOverlay({
                   Drop to add to your library
                 </span>
                 <span className={css({ fontSize: "sm", color: "textMuted", lineHeight: "1.5" })}>
-                  A CBZ, a PDF, or a folder of images.
+                  A CBZ, CBR, CB7, CBT, a PDF, or a folder of images.
                 </span>
               </>
             )}

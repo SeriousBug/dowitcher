@@ -75,6 +75,9 @@ type Config struct {
 	// manager directly would close a cycle even though imports never imports
 	// library. main wires this to the manager's EnqueueLibraryPDF. May be nil.
 	OnPDF func(absPath string)
+	// OnArchive is OnPDF's counterpart for a non-zip comic container (CBR/CB7/CBT)
+	// found under the root. main wires it to EnqueueLibraryArchive. May be nil.
+	OnArchive func(absPath string)
 }
 
 const (
@@ -113,13 +116,14 @@ type Library struct {
 	pubMu   sync.Mutex
 	lastPub time.Time
 
-	// pdfSeen dedupes PDF hand-offs by path and modtime. Scan, watch and repeated
-	// sweeps all find the same file, so a PDF is handed to OnPDF only when it is
-	// new or its modtime changed. A failed conversion will not retry until the
-	// file itself changes, which keeps a bad PDF from being re-queued every sweep;
-	// the manager's input-path dedupe is the correctness backstop.
-	pdfMu   sync.Mutex
-	pdfSeen map[string]int64
+	// convertSeen dedupes conversion hand-offs (PDF and non-zip archives) by path
+	// and modtime. Scan, watch and repeated sweeps all find the same file, so it is
+	// handed off only when it is new or its modtime changed. A failed conversion
+	// will not retry until the file itself changes, which keeps a bad file from
+	// being re-queued every sweep; the manager's input-path dedupe is the
+	// correctness backstop.
+	convertMu   sync.Mutex
+	convertSeen map[string]int64
 }
 
 // New builds a Library. onStatus may be nil, which is what a test that does not
@@ -144,13 +148,13 @@ func New(st *store.Store, cfg Config, onStatus StatusFunc) *Library {
 		// add scheduling overhead to work that is already CPU-saturated.
 		cfg.Workers = runtime.NumCPU()
 	}
-	l := &Library{st: st, cfg: cfg, onStatus: onStatus, pdfSeen: map[string]int64{}}
+	l := &Library{st: st, cfg: cfg, onStatus: onStatus, convertSeen: map[string]int64{}}
 	l.status.Root = cfg.Root
 	l.status.ComicCount = l.count()
 	return l
 }
 
-// isPDF reports whether a filename is a PDF worth handing to OnPDF. Dotfiles are
+// isPDF reports whether a filename is a PDF worth converting. Dotfiles are
 // skipped for the same reason isCandidate skips them: a half-copied file often
 // lands under a dotfile name first.
 func isPDF(name string) bool {
@@ -160,10 +164,39 @@ func isPDF(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".pdf")
 }
 
-// handlePDF hands a PDF off to OnPDF, deduped by path and modtime so scan, watch
-// and sweep between them queue it only once. rel is a root-relative slash path.
-func (l *Library) handlePDF(rel string) {
-	if l.cfg.OnPDF == nil {
+// isArchive reports whether a filename is a non-zip comic container worth
+// converting. A .zip/.cbz is not here — it is a candidate the scanner reconciles
+// directly, since a CBZ is already the serving format.
+func isArchive(name string) bool {
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "._") {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".cbr", ".rar", ".cb7", ".7z", ".cbt", ".tar":
+		return true
+	}
+	return false
+}
+
+// isConvertible reports whether a filename is one the import queue converts to a
+// CBZ (a PDF or a non-zip archive) rather than a CBZ the scanner reconciles.
+func isConvertible(name string) bool {
+	return isPDF(name) || isArchive(name)
+}
+
+// handleConvert hands a convertible file (PDF or non-zip archive) to the right
+// callback, deduped by path and modtime so scan, watch and the sweeps between
+// them queue it only once. rel is a root-relative slash path.
+func (l *Library) handleConvert(rel string) {
+	base := filepath.Base(rel)
+	var cb func(string)
+	switch {
+	case isPDF(base):
+		cb = l.cfg.OnPDF
+	case isArchive(base):
+		cb = l.cfg.OnArchive
+	}
+	if cb == nil {
 		return
 	}
 	abs := l.abs(rel)
@@ -172,14 +205,14 @@ func (l *Library) handlePDF(rel string) {
 		return
 	}
 	mod := fi.ModTime().UnixNano()
-	l.pdfMu.Lock()
-	if seen, ok := l.pdfSeen[abs]; ok && seen == mod {
-		l.pdfMu.Unlock()
+	l.convertMu.Lock()
+	if seen, ok := l.convertSeen[abs]; ok && seen == mod {
+		l.convertMu.Unlock()
 		return
 	}
-	l.pdfSeen[abs] = mod
-	l.pdfMu.Unlock()
-	l.cfg.OnPDF(abs)
+	l.convertSeen[abs] = mod
+	l.convertMu.Unlock()
+	cb(abs)
 }
 
 // Status is what the scanner is doing right now.
