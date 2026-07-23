@@ -47,6 +47,9 @@ type Importer interface {
 	// StartPDF extracts a fully uploaded PDF into page images and runs them
 	// through the same pipeline as a folder import. ctx is detached(r).
 	StartPDF(ctx context.Context, jobID, pdfPath string, opts api.ImportOptions) error
+	// StartArchive extracts a fully uploaded non-zip comic container (CBR/CB7/CBT)
+	// into page images and runs them through the same pipeline. ctx is detached(r).
+	StartArchive(ctx context.Context, jobID, archivePath string, opts api.ImportOptions) error
 	// Fail marks a job that died before the pipeline got it, which is how a
 	// broken upload stops being a spinner.
 	Fail(jobID, msg string)
@@ -67,6 +70,10 @@ type Importer interface {
 	// EnqueueLibraryPDF queues a PDF dropped into the watched library folder for
 	// conversion to a server-wide CBZ. The job is ownerless.
 	EnqueueLibraryPDF(pdfPath string)
+	// EnqueueLibraryArchive queues a non-zip comic container (CBR/CB7/CBT) dropped
+	// into the watched library folder for conversion to a server-wide CBZ. The job
+	// is ownerless.
+	EnqueueLibraryArchive(archivePath string)
 	// Dupes is the finished job's merge report.
 	Dupes(userID, jobID string) ([]api.DupeGroup, error)
 	// Adopt files an already-packed CBZ at srcPath as a comic owned by userID.

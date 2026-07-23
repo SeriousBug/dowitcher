@@ -82,6 +82,18 @@ export function isPDF(file: File): boolean {
   return PDF_RE.test(file.name);
 }
 
+const ARCHIVE_RE = /\.(cbr|rar|cb7|7z|cbt|tar)$/i;
+
+/**
+ * A non-zip comic container (CBR/CB7/CBT). Matched on the name alone, like isCBZ:
+ * the server opens and decodes it before it believes it is one, transcoding it to
+ * a CBZ. A CBZ/ZIP is not here — it is already the serving format and takes the
+ * faster adopt path.
+ */
+export function isArchive(file: File): boolean {
+  return ARCHIVE_RE.test(file.name);
+}
+
 /**
  * Walk a dropped folder. A drop hands over FileSystemEntry objects rather than
  * Files, and the directory reader returns at most 100 entries per call, so each

@@ -32,6 +32,11 @@ const (
 	// where it was — its folder is never written to — so a library-pdf comic is
 	// deduped by content hash rather than by the source file being removed.
 	SourceLibraryPDF = "library-pdf"
+	// SourceLibraryArchive is a comic converted from a non-zip archive (CBR/CB7/CBT)
+	// dropped into the watched library folder. It behaves in every way like
+	// SourceLibraryPDF — server-wide, CBZ in the data dir, source left in place,
+	// content-hash deduped — and differs only in what the source file was.
+	SourceLibraryArchive = "library-archive"
 )
 
 // --- Users ---
@@ -614,7 +619,7 @@ func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
 // the two NULL owner_ids of a library comic in a library owner's collection
 // still match; library comics are covered by the source arm regardless.
 func visibleComics(userID string) (string, []any) {
-	const frag = `(comics.source IN ('library','library-pdf')
+	const frag = `(comics.source IN ('library','library-pdf','library-archive')
 		OR comics.owner_id=?
 		OR EXISTS (
 			SELECT 1 FROM collection_comics cc
@@ -712,8 +717,8 @@ func (s *Store) ServerWideComicByHash(hash string) (ComicRow, error) {
 	if hash == "" {
 		return ComicRow{}, ErrNotFound
 	}
-	return s.comicRowWhere(`comics.content_hash=? AND comics.source IN (?,?)`,
-		hash, SourceLibrary, SourceLibraryPDF)
+	return s.comicRowWhere(`comics.content_hash=? AND comics.source IN (?,?,?)`,
+		hash, SourceLibrary, SourceLibraryPDF, SourceLibraryArchive)
 }
 
 // ComicRowByID returns the raw row for an id, ignoring visibility. Handlers must
@@ -1526,14 +1531,14 @@ func (s *Store) ListAllImportJobs(limit int) ([]api.ImportJob, error) {
 // the only thing standing between "already imported" and re-converting it on the
 // next scan; clearing the visible import list must not take the library's memory
 // with it. A failed library-pdf job carries no comic and is fair game to clear.
-const keepImportedLibraryPDF = ` AND NOT (kind='library-pdf' AND comic_id IS NOT NULL)`
+const keepImportedLibrary = ` AND NOT (kind IN ('library-pdf','library-archive') AND comic_id IS NOT NULL)`
 
 func (s *Store) DeleteFinishedImportJobs(ownerID string, all bool) error {
 	if all {
-		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0` + keepImportedLibraryPDF)
+		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0` + keepImportedLibrary)
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`+keepImportedLibraryPDF, ownerID)
+	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`+keepImportedLibrary, ownerID)
 	return err
 }
 
@@ -1560,10 +1565,10 @@ func (s *Store) HasUnfinishedImportJobForInput(inputPath string) (bool, error) {
 // HasImportedInput reports whether a finished job already produced a comic from
 // inputPath. It is the library-pdf importer's cross-restart skip: the source PDF
 // stays on its read-only mount, so every restart re-hands it off, and re-running
-// the conversion each time would be pure waste. A failed job (comic_id='') does
+// the conversion each time would be pure waste. A failed job (comic_id=”) does
 // not count — a PDF that failed last time is meant to be retried. These records
 // are protected from the "clear finished imports" action (see
-// keepImportedLibraryPDF), so this memory survives; the content-hash check at
+// keepImportedLibrary), so this memory survives; the content-hash check at
 // filing time is the last-resort backstop if a record is lost some other way.
 func (s *Store) HasImportedInput(inputPath string) (bool, error) {
 	if inputPath == "" {

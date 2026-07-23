@@ -92,9 +92,9 @@ export function ImportPage() {
   const cbzInputRef = useRef<HTMLInputElement>(null);
 
   const [files, setFiles] = useState<File[]>([]);
-  // Ready-made books (CBZ or PDF) and a folder of images are the two things this
-  // page takes, and they are exclusive: a folder of images goes through the
-  // dedupe pipeline, a ready-made book does not.
+  // Ready-made books (CBZ, PDF, or a non-zip archive) and a folder of images are
+  // the two things this page takes, and they are exclusive: a folder of images
+  // goes through the dedupe pipeline, a ready-made CBZ does not.
   const [ready, setReady] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
   const [sensitivity, setSensitivity] = useState<SensitivityId>("normal");
@@ -156,7 +156,7 @@ export function ImportPage() {
       toaster.create({
         type: "error",
         title: "Nothing to import in there",
-        description: "Dowitcher packs images into a CBZ. Drop a folder of images, a CBZ, or a PDF.",
+        description: "Dowitcher packs images into a CBZ. Drop a folder of images, a CBZ, CBR, CB7, CBT, or a PDF.",
       });
     }
   }
@@ -284,7 +284,7 @@ export function ImportPage() {
         <FolderUp size={30} className={css({ color: "ink.500" })} strokeWidth={1.5} />
         <div className={vstack({ gap: "1.5", maxW: "md" })}>
           <h2 className={css({ fontSize: "lg", fontWeight: "bold" })}>
-            Drop a folder of images, a CBZ, or a PDF
+            Drop a folder of images, a CBZ, CBR, CB7, CBT, or a PDF
           </h2>
           <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
             Pages get sorted by filename. Anything that turns out to be the same
@@ -307,7 +307,7 @@ export function ImportPage() {
         <input
           ref={cbzInputRef}
           type="file"
-          accept=".cbz,.zip,.pdf"
+          accept=".cbz,.zip,.pdf,.cbr,.rar,.cb7,.7z,.cbt,.tar"
           onChange={(e) => take([...(e.target.files ?? [])])}
           className={css({ srOnly: true })}
         />
@@ -325,7 +325,7 @@ export function ImportPage() {
             icon={<FileArchive size={16} />}
             onClick={() => cbzInputRef.current?.click()}
           >
-            Choose a CBZ or PDF
+            Choose a CBZ, PDF, or archive
           </Button>
         </div>
 
@@ -884,7 +884,7 @@ function QueueRow({
         <span className={css({ fontWeight: "semibold", truncate: true })}>
           {job.name || "Untitled import"}
         </span>
-        {job.kind === "library-pdf" && (
+        {(job.kind === "library-pdf" || job.kind === "library-archive") && (
           <span
             className={css({
               px: "1.5",
@@ -897,7 +897,7 @@ function QueueRow({
               flexShrink: 0,
             })}
           >
-            LIBRARY PDF
+            {job.kind === "library-pdf" ? "LIBRARY PDF" : "LIBRARY ARCHIVE"}
           </span>
         )}
       </div>
