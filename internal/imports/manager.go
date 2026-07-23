@@ -577,6 +577,9 @@ func (m *Manager) Reorder(jobIDs []string) error {
 // result as the uploader's comic. The source PDF is kept until the pipeline
 // succeeds so a drain mid-pipeline still has it to re-render on restart.
 func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
+	if opts.Encode == "" {
+		opts.Encode = defaultPDFEncode
+	}
 	pdfDir := filepath.Dir(pdfPath)
 	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-pdf-*")
 	if err != nil {
@@ -618,6 +621,9 @@ func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string,
 // makes the conversion idempotent by content hash rather than by removing the
 // source, which is what lets a read-only library mount work at all.
 func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
+	if opts.Encode == "" {
+		opts.Encode = defaultPDFEncode
+	}
 	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-libpdf-*")
 	if err != nil {
 		log.Printf("library-pdf %s: temp dir: %v", job.ID, err)

@@ -106,7 +106,7 @@ export function ImportPage() {
     name: "",
     threshold: 3,
     exact: false,
-    encode: "",
+    encode: "avif",
     quality: 80,
   });
 

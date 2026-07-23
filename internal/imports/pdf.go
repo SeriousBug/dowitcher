@@ -25,6 +25,14 @@ var ErrNotPDF = errors.New("imports: not a readable pdf")
 // whose page count or page size inflates the render past the upload cap.
 var ErrPDFTooBig = errors.New("imports: rasterised pdf pages exceed the size cap")
 
+// defaultPDFEncode is the page format a PDF import re-encodes to when the caller
+// names none. A verbatim (empty) encode only made sense while the importer
+// pulled original image bytes out of the PDF, where re-encoding would have
+// thrown away quality for nothing. Rasterising already produces a fresh raster
+// per page, so there is no original to preserve, and AVIF is a large size win
+// over the intermediate JPEG for exactly this flat, full-colour content.
+const defaultPDFEncode = "avif"
+
 // renderMaxEdge caps the longer side of a rasterised page in pixels. Comic scans
 // here are ~2700px on the long edge, so this reproduces native resolution
 // without upscaling small pages into needless work, and bounds the pixels a
