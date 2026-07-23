@@ -122,7 +122,7 @@ async function walk(entry: FileSystemEntry, out: File[]): Promise<void> {
     const file = await new Promise<File | null>((resolve) =>
       (entry as FileSystemFileEntry).file(resolve, () => resolve(null)),
     );
-    if (file && (isImage(file) || isCBZ(file) || isPDF(file))) {
+    if (file && (isImage(file) || isCBZ(file) || isPDF(file) || isArchive(file))) {
       // webkitRelativePath is read-only and empty on a dropped file, so the
       // entry's full path is stashed where the uploader can find it.
       Object.defineProperty(file, "dowitcherPath", { value: entry.fullPath.replace(/^\//, "") });

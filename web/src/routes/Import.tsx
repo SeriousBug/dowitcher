@@ -28,7 +28,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { formatBytes } from "../lib/format";
-import { filesFromDrop, isCBZ, isImage, isPDF, pathOf, uploadWithProgress } from "../lib/upload";
+import { filesFromDrop, isArchive, isCBZ, isImage, isPDF, pathOf, uploadWithProgress } from "../lib/upload";
 import { useComicUploads } from "../lib/useComicUploads";
 import type { Collection, DupeGroup, ImportJob, ImportOptions } from "../api/generated";
 
@@ -123,7 +123,7 @@ export function ImportPage() {
     : files.reduce((n, f) => n + f.size, 0);
 
   function take(picked: File[]) {
-    const books = picked.filter((f) => isCBZ(f) || isPDF(f));
+    const books = picked.filter((f) => isCBZ(f) || isPDF(f) || isArchive(f));
     const images = picked.filter(isImage);
 
     // Ready-made books win only when they arrived on their own. Mixed with images
@@ -289,8 +289,8 @@ export function ImportPage() {
           <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
             Pages get sorted by filename. Anything that turns out to be the same
             image twice only makes it in once. A CBZ is already a book, so it
-            goes straight to the shelf untouched; a PDF has its pages pulled out
-            and packed into one.
+            goes straight to the shelf untouched; a PDF or a CBR/CB7/CBT has its
+            pages pulled out and packed into one.
           </p>
         </div>
 
