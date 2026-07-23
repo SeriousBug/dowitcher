@@ -1,137 +1,160 @@
 package imports
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"image/jpeg"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
-	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/klippa-app/go-pdfium"
+	"github.com/klippa-app/go-pdfium/requests"
+	"github.com/klippa-app/go-pdfium/webassembly"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
 )
 
-// ErrNotPDF means the uploaded file did not open and parse as a PDF.
+// ErrNotPDF means the file did not open or parse as a PDF.
 var ErrNotPDF = errors.New("imports: not a readable pdf")
 
-// ErrPDFTooBig means the images extracted from a PDF exceeded the byte budget:
-// a PDF bomb whose embedded images inflate past the upload cap.
-var ErrPDFTooBig = errors.New("imports: extracted pdf images exceed the size cap")
+// ErrPDFTooBig means the rasterised pages exceeded the byte budget: a PDF bomb
+// whose page count or page size inflates the render past the upload cap.
+var ErrPDFTooBig = errors.New("imports: rasterised pdf pages exceed the size cap")
 
-// pdfImageExts maps pdfcpu's FileType (the format it decoded an embedded image
-// to) onto a file extension the collect step accepts. A filetype missing here is
-// one the pipeline cannot read — it is skipped rather than written as junk the
-// later stages would silently drop anyway.
-var pdfImageExts = map[string]string{
-	"jpg":  ".jpg",
-	"jpeg": ".jpg",
-	"png":  ".png",
-	// pdfcpu names its TIFF output "tif"; the pipeline's imageExts only knows the
-	// ".tiff" spelling, so normalise to it.
-	"tif":  ".tiff",
-	"tiff": ".tiff",
+// renderMaxEdge caps the longer side of a rasterised page in pixels. Comic scans
+// here are ~2700px on the long edge, so this reproduces native resolution
+// without upscaling small pages into needless work, and bounds the pixels a
+// single page can allocate well under the pipeline's decode limit.
+const renderMaxEdge = 2600
+
+// renderQuality is the JPEG quality of the intermediate page written for the
+// pipeline. The pipeline re-encodes to the import's chosen format, so this only
+// has to be high enough that the one extra generation is not visible.
+const renderQuality = 92
+
+// pdfiumInstanceTimeout bounds the wait for a free pdfium worker. A book holds
+// its worker for the whole render, so this only bites when more concurrent
+// imports than pool workers are in flight; it is generous because the wait is
+// legitimate, not a failure.
+const pdfiumInstanceTimeout = 5 * time.Minute
+
+// pdfium renders PDF pages by running Chrome's PDF engine compiled to
+// WebAssembly under wazero. It is the only path that reproduces these pages:
+// Internet Archive comic scans store each page as a JPEG 2000 colour layer plus
+// a JBIG2 bilevel ink mask (MRC), so no single embedded image is the page and
+// pulling embedded images out yields a textless blur or a colourless line
+// drawing. Rasterising composites the layers, and pdfium decodes JPEG 2000 and
+// JBIG2 that the Go image stack cannot. The wazero build keeps CGO_ENABLED=0 and
+// the static/distroless image, matching how the image codecs are already run.
+var (
+	pdfiumOnce sync.Once
+	pdfiumPool pdfium.Pool
+	pdfiumErr  error
+)
+
+// pdfiumWorkers is the pool's instance cap. Each instance is a full pdfium wasm
+// module, so this is kept small; it comfortably covers the import queue's
+// default worker count, and extra imports wait for a free worker rather than
+// each spinning up another module's worth of memory.
+const pdfiumWorkers = 4
+
+func getPdfiumPool() (pdfium.Pool, error) {
+	pdfiumOnce.Do(func() {
+		// MinIdle 0 holds no memory when no import is running; MaxIdle 1 keeps one
+		// warm module so back-to-back imports skip the wasm compile.
+		pdfiumPool, pdfiumErr = webassembly.Init(webassembly.Config{
+			MinIdle:  0,
+			MaxIdle:  1,
+			MaxTotal: pdfiumWorkers,
+		})
+	})
+	return pdfiumPool, pdfiumErr
 }
 
-// ExtractPDF writes every embedded page image under destDir, named so a natural
-// sort keeps page order, and returns the count.
+// RasterizePDF renders every page of the PDF to a JPEG under destDir, named so a
+// natural sort keeps page order, and returns the page count. The written images
+// feed the same pipeline a folder-of-images import runs.
 //
-// Comic PDFs are one embedded full-page scan per page, so this pulls the
-// original image bytes out untouched rather than rasterising the page — the
-// pure-Go path, and lossless where rasterising would re-render. The written
-// images feed the same pipeline a folder-of-images import runs.
-//
-// budget caps the total bytes written, the same PDF/zip-bomb guard the upload
-// path enforces. Reuses ErrNoImages when a PDF carries no extractable images
-// (a vector/text PDF, or a file that opened but yielded nothing). A PDF that
-// fails to open or parse is wrapped as ErrNotPDF.
-func ExtractPDF(ctx context.Context, pdfPath, destDir string, budget int64, progress ProgressFunc) (int, error) {
+// budget caps the total bytes written, the PDF-bomb guard mirroring the upload
+// cap. A file that will not open or parse as a PDF is wrapped as ErrNotPDF; a
+// PDF whose page count is absurd is ErrTooManyFiles; a render that outgrows the
+// budget is ErrPDFTooBig.
+func RasterizePDF(ctx context.Context, pdfPath, destDir string, budget int64, progress ProgressFunc) (int, error) {
 	if progress == nil {
 		progress = func(api.ImportStage, int, int) {}
 	}
-	// PageCountFile drives the pad width and the progress total. It parses the
-	// PDF, so a failure here is the earliest sign the file is unreadable.
-	pageCount, err := pdfapi.PageCountFile(pdfPath)
+
+	pool, err := getPdfiumPool()
+	if err != nil {
+		return 0, fmt.Errorf("imports: pdfium init: %w", err)
+	}
+	inst, err := pool.GetInstance(pdfiumInstanceTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("imports: pdfium instance: %w", err)
+	}
+	defer inst.Close()
+
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return 0, err
+	}
+	doc, err := inst.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrNotPDF, err)
+	}
+	defer inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+
+	pc, err := inst.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrNotPDF, err)
+	}
+	pageCount := pc.PageCount
+	if pageCount <= 0 {
+		return 0, fmt.Errorf("%w in %s", ErrNoImages, pdfPath)
+	}
+	if pageCount > maxFiles {
+		return 0, fmt.Errorf("%w: %d pages, limit is %d", ErrTooManyFiles, pageCount, maxFiles)
 	}
 	width := padWidth(pageCount)
 
-	f, err := os.Open(pdfPath)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	written := 0
 	var bytesWritten int64
-	receiver := func(img model.Image, single bool, _ int) error {
+	for i := 0; i < pageCount; i++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return i, err
 		}
-		if img.Reader == nil {
-			return nil
-		}
-		ext, ok := pdfImageExts[img.FileType]
-		if !ok {
-			// A filetype the pipeline can't read. Skipping keeps a stray mask or
-			// an odd colourspace from becoming a page that later stages drop.
-			return nil
-		}
-		// seq disambiguates the rare multi-image page and keeps those images
-		// ordered within the page; a single-image page still gets a seq so every
-		// name has the same shape and sorts together.
-		seq := 0
-		if !single {
-			seq = img.ObjNr
-		}
-		name := fmt.Sprintf("%0*d-%02d%s", width, img.PageNr, seq, ext)
-		dst := filepath.Join(destDir, name)
-		remaining := budget - bytesWritten
-		n, err := writePDFImage(dst, img, remaining)
+		render, err := inst.RenderPageInPixels(&requests.RenderPageInPixels{
+			Width:  renderMaxEdge,
+			Height: renderMaxEdge,
+			Page: requests.Page{
+				ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i},
+			},
+		})
 		if err != nil {
-			return err
+			return i, fmt.Errorf("%w: page %d: %v", ErrNotPDF, i+1, err)
 		}
-		bytesWritten += n
-		written++
-		progress(api.StageExtracting, written, pageCount)
-		return nil
+
+		var buf bytes.Buffer
+		encErr := jpeg.Encode(&buf, render.Result.Image, &jpeg.Options{Quality: renderQuality})
+		render.Cleanup()
+		if encErr != nil {
+			return i, fmt.Errorf("imports: encode page %d: %w", i+1, encErr)
+		}
+
+		bytesWritten += int64(buf.Len())
+		if bytesWritten > budget {
+			return i, ErrPDFTooBig
+		}
+
+		name := fmt.Sprintf("%0*d.jpg", width, i+1)
+		if err := os.WriteFile(filepath.Join(destDir, name), buf.Bytes(), 0o644); err != nil {
+			return i, err
+		}
+		progress(api.StageExtracting, i+1, pageCount)
 	}
 
-	// nil selected-pages means every page.
-	if err := pdfapi.ExtractImages(f, nil, receiver, model.NewDefaultConfiguration()); err != nil {
-		// A budget breach and a cancellation come back through the receiver and
-		// mean exactly themselves; only a genuine parse failure is ErrNotPDF.
-		if errors.Is(err, ErrPDFTooBig) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return written, err
-		}
-		return 0, fmt.Errorf("%w: %v", ErrNotPDF, err)
-	}
-	if written == 0 {
-		return 0, fmt.Errorf("%w in %s", ErrNoImages, pdfPath)
-	}
-	return written, nil
-}
-
-// writePDFImage streams one embedded image to disk, refusing to write more than
-// budget so a hostile PDF cannot expand past the upload cap.
-func writePDFImage(dst string, r io.Reader, budget int64) (int64, error) {
-	if budget <= 0 {
-		return 0, ErrPDFTooBig
-	}
-	out, err := os.Create(dst)
-	if err != nil {
-		return 0, err
-	}
-	defer out.Close()
-	n, err := io.Copy(out, io.LimitReader(r, budget+1))
-	if err != nil {
-		return n, err
-	}
-	if n > budget {
-		return n, ErrPDFTooBig
-	}
-	return n, nil
+	return pageCount, nil
 }

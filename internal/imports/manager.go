@@ -573,9 +573,9 @@ func (m *Manager) Reorder(jobIDs []string) error {
 	return nil
 }
 
-// runPDF extracts a PDF's page images, then runs the shared pipeline and files
-// the result as the uploader's comic. The source PDF is kept until the pipeline
-// succeeds so a drain mid-pipeline still has it to re-extract on restart.
+// runPDF rasterises a PDF's pages, then runs the shared pipeline and files the
+// result as the uploader's comic. The source PDF is kept until the pipeline
+// succeeds so a drain mid-pipeline still has it to re-render on restart.
 func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string, opts api.ImportOptions) {
 	pdfDir := filepath.Dir(pdfPath)
 	srcDir, err := os.MkdirTemp(m.cfg.ImportTempDir, "dowitcher-pdf-*")
@@ -588,12 +588,12 @@ func (m *Manager) runPDF(ctx context.Context, job api.ImportJob, pdfPath string,
 	// The extracted images are transient either way.
 	defer os.RemoveAll(srcDir)
 
-	if _, err := ExtractPDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
+	if _, err := RasterizePDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
 		if m.drained(err) {
 			m.requeueForRestart(job.ID)
 			return
 		}
-		log.Printf("import %s: extract pdf: %v", job.ID, err)
+		log.Printf("import %s: rasterize pdf: %v", job.ID, err)
 		os.RemoveAll(pdfDir)
 		m.Fail(job.ID, failMessage(err))
 		return
@@ -626,12 +626,12 @@ func (m *Manager) runLibraryPDF(ctx context.Context, job api.ImportJob, pdfPath 
 	}
 	defer os.RemoveAll(srcDir)
 
-	if _, err := ExtractPDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
+	if _, err := RasterizePDF(ctx, pdfPath, srcDir, m.extractBudget(), m.progress(job.ID)); err != nil {
 		if m.drained(err) {
 			m.requeueForRestart(job.ID)
 			return
 		}
-		log.Printf("library-pdf %s: extract: %v", job.ID, err)
+		log.Printf("library-pdf %s: rasterize: %v", job.ID, err)
 		m.Fail(job.ID, failMessage(err))
 		return
 	}
@@ -795,7 +795,7 @@ func (m *Manager) requeueForRestart(jobID string) {
 	log.Printf("import %s left queued for restart (server draining)", jobID)
 }
 
-// extractBudget is the byte cap on a PDF's extracted images.
+// extractBudget is the byte cap on a PDF's rasterised pages.
 func (m *Manager) extractBudget() int64 {
 	if m.cfg.MaxUploadBytes > 0 {
 		return m.cfg.MaxUploadBytes

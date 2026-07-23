@@ -13,8 +13,10 @@ import (
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
-// makeJPEG encodes a distinct JPEG per seed so the extracted pages can be told
-// apart and matched back to the page they came from.
+// makeJPEG encodes a distinct block-patterned JPEG per seed. The 8x8 block
+// pattern survives the 64x64 grayscale thumbnail, so a rasterised page can be
+// matched back to the source image it was rendered from even though rendering
+// is not byte-preserving.
 func makeJPEG(t *testing.T, seed int64) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -25,8 +27,7 @@ func makeJPEG(t *testing.T, seed int64) []byte {
 }
 
 // buildPDF writes a PDF whose pages each embed one of imgs, the shape a scanned
-// comic PDF has. pdfcpu stores a JPEG as a DCTDecode stream verbatim, so the
-// bytes come back out of ExtractPDF unchanged.
+// comic PDF has.
 func buildPDF(t *testing.T, path string, imgs [][]byte) {
 	t.Helper()
 	readers := make([]io.Reader, len(imgs))
@@ -46,7 +47,24 @@ func buildPDF(t *testing.T, path string, imgs [][]byte) {
 	}
 }
 
-func TestExtractPDFOrderAndLossless(t *testing.T) {
+// bestMatch returns the index of the source thumbnail closest to page, the way
+// the rasterised page of source i should be nearest source i.
+func bestMatch(t *testing.T, page []byte, srcThumbs [][]byte) int {
+	t.Helper()
+	_, th, err := thumbnail(page)
+	if err != nil {
+		t.Fatalf("thumbnail rendered page: %v", err)
+	}
+	best, bestErr := -1, 0.0
+	for i, s := range srcThumbs {
+		if d := mae(th, s); best == -1 || d < bestErr {
+			best, bestErr = i, d
+		}
+	}
+	return best
+}
+
+func TestRasterizePDFOrderAndPageCount(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "book.pdf")
 	pages := [][]byte{
@@ -57,16 +75,18 @@ func TestExtractPDFOrderAndLossless(t *testing.T) {
 	buildPDF(t, pdfPath, pages)
 
 	destDir := t.TempDir()
-	n, err := ExtractPDF(context.Background(), pdfPath, destDir, 8<<30, nil)
+	n, err := RasterizePDF(context.Background(), pdfPath, destDir, 8<<30, nil)
 	if err != nil {
-		t.Fatalf("ExtractPDF: %v", err)
+		t.Fatalf("RasterizePDF: %v", err)
 	}
 	if n != len(pages) {
-		t.Fatalf("extracted %d images, want %d", n, len(pages))
+		t.Fatalf("rasterised %d pages, want %d", n, len(pages))
 	}
 
 	// collect natural-sorts by name, which is the order the pipeline reads pages
-	// in — so extracted file i must be the JPEG embedded on page i+1.
+	// in — so rasterised file i must be rendered from the image embedded on page
+	// i+1. Rendering is not byte-preserving, so order is checked by matching each
+	// page's thumbnail back to its source rather than by comparing bytes.
 	files, err := collect(destDir)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
@@ -74,33 +94,43 @@ func TestExtractPDFOrderAndLossless(t *testing.T) {
 	if len(files) != len(pages) {
 		t.Fatalf("collect found %d files, want %d", len(files), len(pages))
 	}
+
+	srcThumbs := make([][]byte, len(pages))
+	for i := range pages {
+		_, th, err := thumbnail(pages[i])
+		if err != nil {
+			t.Fatalf("thumbnail source %d: %v", i, err)
+		}
+		srcThumbs[i] = th
+	}
+
 	for i, f := range files {
 		if ext := filepath.Ext(f.abs); ext != ".jpg" {
 			t.Errorf("page %d extension = %q, want .jpg", i, ext)
 		}
-		got, err := os.ReadFile(f.abs)
+		buf, err := os.ReadFile(f.abs)
 		if err != nil {
-			t.Fatalf("read extracted page %d: %v", i, err)
+			t.Fatalf("read rasterised page %d: %v", i, err)
 		}
-		if !bytes.Equal(got, pages[i]) {
-			t.Errorf("page %d bytes differ from the embedded JPEG (extraction should be lossless)", i)
+		if got := bestMatch(t, buf, srcThumbs); got != i {
+			t.Errorf("rasterised page %d best-matches source %d, want %d (pages out of order)", i, got, i)
 		}
 	}
 }
 
-func TestExtractPDFRejectsNonPDF(t *testing.T) {
+func TestRasterizePDFRejectsNonPDF(t *testing.T) {
 	dir := t.TempDir()
 	// A file named .pdf that is not one — the extension is not trusted.
 	bad := filepath.Join(dir, "notreally.pdf")
 	if err := os.WriteFile(bad, []byte("this is plainly not a PDF\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ExtractPDF(context.Background(), bad, t.TempDir(), 8<<30, nil); !errors.Is(err, ErrNotPDF) {
+	if _, err := RasterizePDF(context.Background(), bad, t.TempDir(), 8<<30, nil); !errors.Is(err, ErrNotPDF) {
 		t.Fatalf("err = %v, want ErrNotPDF", err)
 	}
 }
 
-func TestExtractPDFRejectsTruncated(t *testing.T) {
+func TestRasterizePDFRejectsTruncated(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "book.pdf")
 	buildPDF(t, pdfPath, [][]byte{makeJPEG(t, 1), makeJPEG(t, 2)})
@@ -110,25 +140,25 @@ func TestExtractPDFRejectsTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cut the file off mid-download, the way two of the real fixtures were
-	// broken. pdfcpu opens it and errors rather than yielding pages.
+	// broken. pdfium refuses it as "incorrect format" rather than rendering.
 	truncated := filepath.Join(dir, "truncated.pdf")
 	if err := os.WriteFile(truncated, full[:len(full)/2], 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ExtractPDF(context.Background(), truncated, t.TempDir(), 8<<30, nil); !errors.Is(err, ErrNotPDF) {
+	if _, err := RasterizePDF(context.Background(), truncated, t.TempDir(), 8<<30, nil); !errors.Is(err, ErrNotPDF) {
 		t.Fatalf("err = %v, want ErrNotPDF", err)
 	}
 }
 
-func TestExtractPDFBudget(t *testing.T) {
+func TestRasterizePDFBudget(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "book.pdf")
 	pages := [][]byte{makeJPEG(t, 1), makeJPEG(t, 2), makeJPEG(t, 3)}
 	buildPDF(t, pdfPath, pages)
 
-	// A budget below the first page's size must be refused rather than written
-	// past — the PDF-bomb guard.
-	if _, err := ExtractPDF(context.Background(), pdfPath, t.TempDir(), 10, nil); !errors.Is(err, ErrPDFTooBig) {
+	// A budget below one rendered page must be refused rather than written past —
+	// the PDF-bomb guard.
+	if _, err := RasterizePDF(context.Background(), pdfPath, t.TempDir(), 10, nil); !errors.Is(err, ErrPDFTooBig) {
 		t.Fatalf("err = %v, want ErrPDFTooBig", err)
 	}
 }
