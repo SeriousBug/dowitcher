@@ -166,9 +166,10 @@ func main() {
 		Root:          libraryRoot,
 		DataDir:       dataDir,
 		SweepInterval: sweepInterval,
-		// A PDF dropped into the library folder is converted to a CBZ through the
-		// same import queue, as an ownerless server-wide job.
-		OnPDF: im.EnqueueLibraryPDF,
+		// A PDF or non-zip archive dropped into the library folder is converted to a
+		// CBZ through the same import queue, as an ownerless server-wide job.
+		OnPDF:     im.EnqueueLibraryPDF,
+		OnArchive: im.EnqueueLibraryArchive,
 	}, func(s api.LibraryStatus) {
 		srv.Hub().Broadcast(api.WSMessage{Type: api.WSTypeLibrary, Library: &s})
 	})

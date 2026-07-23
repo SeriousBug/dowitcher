@@ -90,11 +90,12 @@ type Comic struct {
 	Missing bool `json:"missing"`
 	// Tags are the caller's own labels on this comic, never anyone else's.
 	Tags []string `json:"tags"`
-	// Source is where the comic came from: "library", "upload", "claimed", or
+	// Source is where the comic came from: "library", "upload", "claimed",
 	// "library-pdf" (a PDF dropped in the library folder, converted to a
-	// server-wide comic whose file lives in the data dir). The client needs it to
-	// know which comics an admin may claim, and the reader needs nothing else from
-	// it. The owner's id stays server-side.
+	// server-wide comic whose file lives in the data dir), or "library-archive"
+	// (the same for a dropped CBR/CB7/CBT). The client needs it to know which
+	// comics an admin may claim, and the reader needs nothing else from it. The
+	// owner's id stays server-side.
 	Source string `json:"source"`
 	// OwnedByMe reports whether the caller owns this comic — their upload, or a
 	// comic they claimed. It answers "may I unclaim this" without naming the
@@ -279,9 +280,10 @@ type ImportJob struct {
 	ComicID     string `json:"comicId,omitempty"`
 	StartedAt   int64  `json:"startedAt"`
 	FinishedAt  int64  `json:"finishedAt,omitempty"`
-	// Kind is how the job is processed: "folder" (images), "pdf" (uploaded PDF)
-	// or "library-pdf" (a PDF dropped into the watched library folder, converted
-	// to a server-wide CBZ). The UI badges a library-pdf job apart.
+	// Kind is how the job is processed: "folder" (images), "pdf" (uploaded PDF),
+	// "archive" (uploaded CBR/CB7/CBT), "library-pdf" (a PDF dropped into the
+	// watched library folder, converted to a server-wide CBZ) or "library-archive"
+	// (the same for a dropped CBR/CB7/CBT). The UI badges the library-* jobs apart.
 	Kind string `json:"kind"`
 	// QueueSeq orders a job in the queue; the lowest unfinished seq runs next. The
 	// client sorts the queued list by it. The staged input path and options JSON

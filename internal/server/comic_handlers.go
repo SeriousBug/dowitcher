@@ -563,12 +563,13 @@ func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "only the uploader can delete an upload")
 			return
 		}
-	case store.SourceLibraryPDF:
-		// A library-pdf comic is server-wide and its CBZ is server-managed in the
-		// data dir, so deleting it is a real, deletable action — unlike a library
-		// comic. It belongs to no one, so only an admin may remove it. The source
-		// PDF is left untouched on its read-only mount; the content-hash dedupe is
-		// what keeps a later restart from re-importing it.
+	case store.SourceLibraryPDF, store.SourceLibraryArchive:
+		// A converted library comic (from a dropped PDF or archive) is server-wide
+		// and its CBZ is server-managed in the data dir, so deleting it is a real,
+		// deletable action — unlike a library comic. It belongs to no one, so only
+		// an admin may remove it. The source file is left untouched on its read-only
+		// mount; the content-hash dedupe is what keeps a later restart from
+		// re-importing it.
 		if !u.IsAdmin {
 			writeErr(w, http.StatusForbidden, "only an admin can delete a server-wide comic")
 			return
@@ -723,10 +724,11 @@ func (s *Server) comicRow(w http.ResponseWriter, id string) (store.ComicRow, boo
 // comicFile turns a stored row into a file to open. Paths are stored relative to
 // the root they came from, so a container's mount points can move without
 // rewriting the database. A claimed comic's file never moved out of the library
-// root; an upload and a library-pdf conversion both live in the writable uploads
-// dir, so only those two resolve anywhere other than the library root.
+// root; an upload and a converted library file (PDF or archive) both live in the
+// writable uploads dir, so only those resolve anywhere other than the library root.
 func (s *Server) comicFile(row store.ComicRow) string {
-	if row.Source == store.SourceUpload || row.Source == store.SourceLibraryPDF {
+	switch row.Source {
+	case store.SourceUpload, store.SourceLibraryPDF, store.SourceLibraryArchive:
 		return filepath.Join(s.cfg.UploadsDir, row.Path)
 	}
 	return filepath.Join(s.cfg.LibraryRoot, row.Path)

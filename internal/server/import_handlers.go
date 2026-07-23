@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/comicarchive"
 	"github.com/SeriousBug/dowitcher/internal/imports"
 )
 
@@ -85,10 +86,11 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		budget = DefaultMaxUploadBytes
 	}
 	files := 0
-	// A PDF is unpacked into page images and run through the same pipeline, but
-	// it is a single self-contained book: it cannot be mixed with loose images,
-	// which would be an ambiguous "which is the comic" upload.
+	// A PDF or a non-zip archive is a single self-contained book: it is unpacked
+	// into page images and run through the same pipeline, but it cannot be mixed
+	// with loose images, which would be an ambiguous "which is the comic" upload.
 	pdfPath := ""
+	archivePath := ""
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -113,10 +115,10 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusBadRequest, "an uploaded file had an unusable name: "+part.FileName())
 			return
 		}
-		if imports.IsPDFName(rel) {
-			if files > 0 || pdfPath != "" {
+		if imports.IsPDFName(rel) || comicarchive.IsArchiveName(rel) {
+			if files > 0 || pdfPath != "" || archivePath != "" {
 				part.Close()
-				fail(http.StatusBadRequest, "a PDF has to be uploaded on its own, not mixed with other files")
+				fail(http.StatusBadRequest, "a PDF or archive has to be uploaded on its own, not mixed with other files")
 				return
 			}
 			dst := filepath.Join(srcDir, filepath.Base(rel))
@@ -132,8 +134,12 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			budget -= n
-			pdfPath = dst
-			// The count drives the "files uploaded" spinner; a PDF is one file.
+			if imports.IsPDFName(rel) {
+				pdfPath = dst
+			} else {
+				archivePath = dst
+			}
+			// The count drives the "files uploaded" spinner; a book is one file.
 			s.importer.Uploaded(job.ID, 1)
 			continue
 		}
@@ -142,12 +148,12 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 			// would ignore means the wrong folder was picked, and saying so beats
 			// producing an empty comic twenty minutes later.
 			part.Close()
-			fail(http.StatusBadRequest, "only image files or a PDF can be imported, got: "+rel)
+			fail(http.StatusBadRequest, "only image files, a PDF or a comic archive can be imported, got: "+rel)
 			return
 		}
-		if pdfPath != "" {
+		if pdfPath != "" || archivePath != "" {
 			part.Close()
-			fail(http.StatusBadRequest, "a PDF has to be uploaded on its own, not mixed with other files")
+			fail(http.StatusBadRequest, "a PDF or archive has to be uploaded on its own, not mixed with other files")
 			return
 		}
 		n, err := writeUpload(filepath.Join(srcDir, filepath.FromSlash(rel)), part, budget)
@@ -169,6 +175,17 @@ func (s *Server) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 	if pdfPath != "" {
 		if err := s.importer.StartPDF(detached(r), job.ID, pdfPath, opts); err != nil {
 			log.Printf("start pdf import %s: %v", job.ID, err)
+			fail(http.StatusInternalServerError, "the import could not be started")
+			return
+		}
+		started = true
+		writeJSON(w, http.StatusOK, job)
+		return
+	}
+
+	if archivePath != "" {
+		if err := s.importer.StartArchive(detached(r), job.ID, archivePath, opts); err != nil {
+			log.Printf("start archive import %s: %v", job.ID, err)
 			fail(http.StatusInternalServerError, "the import could not be started")
 			return
 		}

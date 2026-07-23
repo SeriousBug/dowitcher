@@ -104,7 +104,7 @@ func (l *Library) handleEvent(w *fsnotify.Watcher, d *debouncer, ev fsnotify.Eve
 		_ = w.Remove(ev.Name)
 	}
 	base := filepath.Base(ev.Name)
-	if !isCandidate(base) && !isPDF(base) {
+	if !isCandidate(base) && !isConvertible(base) {
 		return
 	}
 	// Every remaining event kind -- create, write, remove, rename, chmod --
@@ -148,7 +148,7 @@ func (l *Library) armTree(d *debouncer, dir string) {
 			}
 			return nil
 		}
-		if !isCandidate(e.Name()) && !isPDF(e.Name()) {
+		if !isCandidate(e.Name()) && !isConvertible(e.Name()) {
 			return nil
 		}
 		if rel, err := filepath.Rel(l.cfg.Root, p); err == nil {
@@ -209,10 +209,11 @@ func (l *Library) handlePath(ctx context.Context, d *debouncer, rel string) {
 		d.arm(rel)
 		return
 	}
-	// A PDF is not a comic row: once it has settled it goes to the import queue,
-	// which converts it to a CBZ the scanner then picks up as a library comic.
-	if isPDF(filepath.Base(rel)) {
-		l.handlePDF(rel)
+	// A convertible (PDF or non-zip archive) is not a comic row: once it has
+	// settled it goes to the import queue, which converts it to a CBZ the scanner
+	// then picks up as a library comic.
+	if isConvertible(filepath.Base(rel)) {
+		l.handleConvert(rel)
 		return
 	}
 	// os.Stat is the honest answer to "is the old path still there?" for a
