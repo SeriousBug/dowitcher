@@ -24,6 +24,14 @@ const (
 	SourceLibrary = "library"
 	SourceUpload  = "upload"
 	SourceClaimed = "claimed"
+	// SourceLibraryPDF is a comic converted from a PDF dropped into the watched
+	// library folder. It is server-wide like a library comic, but the scanner does
+	// not manage it: its CBZ lives in the uploads (data) dir, not under the library
+	// root, because the library root is read-only by contract and the read-only
+	// mount is exactly what this source exists to tolerate. The source PDF is left
+	// where it was — its folder is never written to — so a library-pdf comic is
+	// deduped by content hash rather than by the source file being removed.
+	SourceLibraryPDF = "library-pdf"
 )
 
 // --- Users ---
@@ -583,18 +591,20 @@ func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
 // --- Comics ---
 
 // visibleComics returns a SQL boolean fragment, plus its args, that is true for
-// exactly the comics userID may see: anything from the watched library root
-// (server-wide by definition), anything they uploaded themselves, and anything
-// sitting in a collection its owner has shared.
+// exactly the comics userID may see: anything server-wide (a library comic, or a
+// comic converted from a library-dropped PDF), anything they uploaded
+// themselves, and anything sitting in a collection its owner has shared.
 //
 // It is a fragment rather than a view so it can be ANDed into any query. Every
 // comic read path in this package must include it: enforcing visibility here
 // rather than in handlers means a new handler cannot forget to.
 //
-// The first arm tests source='library' rather than a NULL owner_id, which is
-// what makes claiming work: a claimed comic is still under the library root but
-// its source is 'claimed', so it falls through to the owner arm and only its
-// claimer sees it. The two must not be conflated here.
+// The first arm tests source rather than a NULL owner_id, which is what makes
+// claiming work: a claimed comic is still under the library root but its source
+// is 'claimed', so it falls through to the owner arm and only its claimer sees
+// it. The two must not be conflated here. 'library-pdf' joins the server-wide arm
+// because a PDF dropped into the shared folder is meant for everyone, exactly
+// like the CBZ next to it — the only difference is where its file lives.
 //
 // The shared arm is restricted to collections owned by the comic's own owner
 // because only the uploader may opt their upload in. Without that, anyone who
@@ -604,7 +614,7 @@ func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
 // the two NULL owner_ids of a library comic in a library owner's collection
 // still match; library comics are covered by the source arm regardless.
 func visibleComics(userID string) (string, []any) {
-	const frag = `(comics.source='library'
+	const frag = `(comics.source IN ('library','library-pdf')
 		OR comics.owner_id=?
 		OR EXISTS (
 			SELECT 1 FROM collection_comics cc
@@ -690,6 +700,20 @@ func (s *Store) ComicRowByHash(hash string) (ComicRow, error) {
 		return ComicRow{}, ErrNotFound
 	}
 	return s.comicRowWhere(`comics.content_hash=?`, hash)
+}
+
+// ServerWideComicByHash returns the raw server-wide row with a matching content
+// hash, ignoring visibility. It is the library-pdf importer's dedupe: the source
+// PDF is never deleted, so a restart re-converts it, and the conversion must not
+// become a second copy of a comic everyone can already see. Scoped to the
+// server-wide sources so it can never collide a fresh library-pdf with some
+// user's private upload of the same bytes.
+func (s *Store) ServerWideComicByHash(hash string) (ComicRow, error) {
+	if hash == "" {
+		return ComicRow{}, ErrNotFound
+	}
+	return s.comicRowWhere(`comics.content_hash=? AND comics.source IN (?,?)`,
+		hash, SourceLibrary, SourceLibraryPDF)
 }
 
 // ComicRowByID returns the raw row for an id, ignoring visibility. Handlers must
@@ -1494,14 +1518,22 @@ func (s *Store) ListAllImportJobs(limit int) ([]api.ImportJob, error) {
 }
 
 // DeleteFinishedImportJobs removes a user's finished jobs. all clears every
-// finished job regardless of owner (including ownerless library-pdf jobs), for
-// an admin.
+// finished job regardless of owner, for an admin.
+//
+// A successful library-pdf job is exempt from both: it is not a mere audit line
+// but the record that remembers a PDF still sitting in the read-only library
+// folder was already converted. The source file is never deleted, so this row is
+// the only thing standing between "already imported" and re-converting it on the
+// next scan; clearing the visible import list must not take the library's memory
+// with it. A failed library-pdf job carries no comic and is fair game to clear.
+const keepImportedLibraryPDF = ` AND NOT (kind='library-pdf' AND comic_id IS NOT NULL)`
+
 func (s *Store) DeleteFinishedImportJobs(ownerID string, all bool) error {
 	if all {
-		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0`)
+		_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0` + keepImportedLibraryPDF)
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`, ownerID)
+	_, err := s.db.Exec(`DELETE FROM import_jobs WHERE finished_at<>0 AND owner_id=?`+keepImportedLibraryPDF, ownerID)
 	return err
 }
 
@@ -1516,6 +1548,30 @@ func (s *Store) HasUnfinishedImportJobForInput(inputPath string) (bool, error) {
 	}
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM import_jobs WHERE finished_at=0 AND input_path=? LIMIT 1`, inputPath).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HasImportedInput reports whether a finished job already produced a comic from
+// inputPath. It is the library-pdf importer's cross-restart skip: the source PDF
+// stays on its read-only mount, so every restart re-hands it off, and re-running
+// the conversion each time would be pure waste. A failed job (comic_id='') does
+// not count — a PDF that failed last time is meant to be retried. These records
+// are protected from the "clear finished imports" action (see
+// keepImportedLibraryPDF), so this memory survives; the content-hash check at
+// filing time is the last-resort backstop if a record is lost some other way.
+func (s *Store) HasImportedInput(inputPath string) (bool, error) {
+	if inputPath == "" {
+		return false, nil
+	}
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM import_jobs
+		WHERE input_path=? AND comic_id IS NOT NULL AND finished_at<>0 LIMIT 1`, inputPath).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

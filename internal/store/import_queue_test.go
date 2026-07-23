@@ -53,6 +53,61 @@ func (s *Store) getAnyImportJob(id string) (api.ImportJob, error) {
 	return out[0], nil
 }
 
+// TestClearFinishedKeepsImportedLibraryPDF: clearing the finished-imports list
+// wipes ordinary finished jobs but spares a successful library-pdf record, which
+// is the only memory that keeps its still-present source PDF from being
+// re-converted on the next scan. A failed library-pdf job carries no such duty
+// and is cleared like the rest.
+func TestClearFinishedKeepsImportedLibraryPDF(t *testing.T) {
+	st := testStore(t)
+	user, _ := st.CreateUser(NewID(), "alice", false)
+
+	// comic_id is a foreign key, so the finished jobs must point at real comics.
+	uploadComic := ComicRow{ID: NewID(), Path: "u.cbz", Title: "U", OwnerID: user.ID, Source: SourceUpload}
+	pdfComic := ComicRow{ID: NewID(), Path: "p.cbz", Title: "P", Source: SourceLibraryPDF}
+	for _, c := range []ComicRow{uploadComic, pdfComic} {
+		if err := st.UpsertComic(c); err != nil {
+			t.Fatalf("seed comic: %v", err)
+		}
+	}
+
+	// An ordinary finished upload: fair game to clear.
+	upload := api.ImportJob{ID: NewID(), OwnerID: user.ID, Kind: "folder",
+		Stage: api.StageDone, ComicID: uploadComic.ID, StartedAt: 1, FinishedAt: 2}
+	// A successful library-pdf conversion: the load-bearing dedupe record.
+	imported := api.ImportJob{ID: NewID(), Kind: "library-pdf",
+		Stage: api.StageDone, ComicID: pdfComic.ID, StartedAt: 1, FinishedAt: 2}
+	// A failed library-pdf attempt: no comic, no duty, clearable.
+	failed := api.ImportJob{ID: NewID(), Kind: "library-pdf",
+		Stage: api.StageFailed, StartedAt: 1, FinishedAt: 2}
+	for _, j := range []api.ImportJob{upload, imported, failed} {
+		if err := st.SaveImportJob(j); err != nil {
+			t.Fatalf("save %s: %v", j.ID, err)
+		}
+	}
+	if err := st.SetImportJobInput(imported.ID, "/library/Book.pdf", "{}"); err != nil {
+		t.Fatalf("set input: %v", err)
+	}
+
+	if err := st.DeleteFinishedImportJobs("", true); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	if _, err := st.getAnyImportJob(upload.ID); err == nil {
+		t.Fatal("an ordinary finished job must be cleared")
+	}
+	if _, err := st.getAnyImportJob(failed.ID); err == nil {
+		t.Fatal("a failed library-pdf job must be cleared")
+	}
+	if _, err := st.getAnyImportJob(imported.ID); err != nil {
+		t.Fatalf("a successful library-pdf record must survive the clear: %v", err)
+	}
+	// And it still answers the dedupe question that is its whole reason to exist.
+	if has, err := st.HasImportedInput("/library/Book.pdf"); err != nil || !has {
+		t.Fatalf("HasImportedInput after clear = %v, %v; want true, nil", has, err)
+	}
+}
+
 // TestSetImportJobInputRoundTrips: the server-only input_path/options survive a
 // write and come back through the recovery accessor, but never through jobCols.
 func TestSetImportJobInputRoundTrips(t *testing.T) {
@@ -138,7 +193,7 @@ func TestDeleteFinishedImportJobs(t *testing.T) {
 	}
 	all, _ := st.ListAllImportJobs(20)
 	if len(all) != 1 || all[0].ID != aRunning.ID {
-		t.Fatalf("admin-all clears every finished job incl ownerless, leaving the running one; got %#v", all)
+		t.Fatalf("admin-all clears every finished job incl a comic-less ownerless one, leaving the running one; got %#v", all)
 	}
 }
 

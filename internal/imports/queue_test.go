@@ -153,8 +153,9 @@ func TestRestartRecovery(t *testing.T) {
 	}
 }
 
-// TestLibraryPDFConversion: a library-pdf job writes a CBZ beside the source,
-// deletes the PDF, files no comic row, and fans out to admins only.
+// TestLibraryPDFConversion: a library-pdf job writes its CBZ to the uploads dir,
+// never touches the read-only library folder, leaves the source PDF in place,
+// files an ownerless server-wide comic, and fans out to admins only.
 func TestLibraryPDFConversion(t *testing.T) {
 	m, st, rec, _ := testManager(t)
 	runWorkers(t, m)
@@ -165,26 +166,41 @@ func TestLibraryPDFConversion(t *testing.T) {
 
 	m.EnqueueLibraryPDF(pdfPath)
 
-	cbzPath := filepath.Join(libDir, "Some Book.cbz")
-	waitFor(t, "the CBZ to appear", func() bool {
-		_, err := os.Stat(cbzPath)
-		return err == nil
+	var job api.ImportJob
+	waitFor(t, "the conversion to file a comic", func() bool {
+		jobs, err := st.ListAllImportJobs(20)
+		if err != nil || len(jobs) != 1 {
+			return false
+		}
+		job = jobs[0]
+		return job.Stage == api.StageDone && job.ComicID != ""
 	})
-	// The source PDF is deleted only after the CBZ is confirmed.
-	if _, err := os.Stat(pdfPath); !os.IsNotExist(err) {
-		t.Fatalf("the source PDF must be deleted after conversion, stat err=%v", err)
+	if job.Kind != kindLibraryPDF {
+		t.Fatalf("job kind = %q, want %q", job.Kind, kindLibraryPDF)
 	}
-	// No comic row is filed by the importer: the scanner adopts the CBZ.
-	comics, err := st.ListAllImportJobs(20)
+
+	// The library folder is read-only by contract: the source PDF stays put and no
+	// CBZ is ever written beside it.
+	if _, err := os.Stat(pdfPath); err != nil {
+		t.Fatalf("the source PDF must be left in place, stat err=%v", err)
+	}
+	if entries, _ := os.ReadDir(libDir); len(entries) != 1 {
+		t.Fatalf("nothing but the PDF may appear in the library folder, got %d entries", len(entries))
+	}
+
+	// The comic is server-wide and ownerless, and its CBZ lives in the uploads dir.
+	row, err := st.ComicRowByID(job.ComicID)
 	if err != nil {
-		t.Fatalf("list jobs: %v", err)
+		t.Fatalf("the importer must file a comic row: %v", err)
 	}
-	if len(comics) != 1 || comics[0].Kind != kindLibraryPDF || comics[0].ComicID != "" {
-		t.Fatalf("library-pdf job = %#v, want one ownerless job with no comic id", comics)
+	if row.Source != store.SourceLibraryPDF {
+		t.Fatalf("source = %q, want %q", row.Source, store.SourceLibraryPDF)
 	}
-	// The row exists in no comics table entry.
-	if _, err := st.ComicRowByPath("Some Book.cbz"); err == nil {
-		t.Fatal("the importer must not file a comic row; the scanner does that")
+	if row.OwnerID != "" {
+		t.Fatalf("a library-pdf comic must be ownerless, got owner %q", row.OwnerID)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.UploadsDir, row.Path)); err != nil {
+		t.Fatalf("the CBZ must live in the uploads dir: %v", err)
 	}
 
 	// The job reached admins, and never an owner (it has none).
@@ -199,6 +215,55 @@ func TestLibraryPDFConversion(t *testing.T) {
 	}
 	if len(rec.recipients()) != 0 {
 		t.Fatalf("an ownerless job must not be addressed to any user, got %v", rec.recipients())
+	}
+}
+
+// TestLibraryPDFReimportDeduped: the source PDF is never deleted, so a later
+// hand-off of the same file (a restart re-scanning the folder) must not produce a
+// second comic. Clearing the import list must not break this: the successful
+// library-pdf record is the library's memory that the PDF was already converted,
+// so it survives the clear and keeps the re-import from happening.
+func TestLibraryPDFReimportDeduped(t *testing.T) {
+	m, st, _, _ := testManager(t)
+	runWorkers(t, m)
+
+	libDir := t.TempDir()
+	pdfPath := filepath.Join(libDir, "Some Book.pdf")
+	buildPDF(t, pdfPath, [][]byte{makeJPEG(t, 1), makeJPEG(t, 2)})
+
+	m.EnqueueLibraryPDF(pdfPath)
+	var firstID string
+	waitFor(t, "the first conversion to finish", func() bool {
+		jobs, _ := st.ListAllImportJobs(20)
+		if len(jobs) == 1 && jobs[0].Stage == api.StageDone && jobs[0].ComicID != "" {
+			firstID = jobs[0].ComicID
+			return true
+		}
+		return false
+	})
+
+	// An admin clearing the finished-imports list must not wipe the dedupe record.
+	if err := st.DeleteFinishedImportJobs("", true); err != nil {
+		t.Fatalf("clear jobs: %v", err)
+	}
+	jobs, _ := st.ListAllImportJobs(20)
+	if len(jobs) != 1 || jobs[0].ComicID != firstID {
+		t.Fatalf("the successful library-pdf record must survive a clear, got %#v", jobs)
+	}
+
+	// Re-handing off the untouched PDF (a restart re-scanning the folder) is skipped
+	// by that surviving record, so no second job and no second comic appear.
+	m.EnqueueLibraryPDF(pdfPath)
+	jobs, _ = st.ListAllImportJobs(20)
+	if len(jobs) != 1 {
+		t.Fatalf("an already-imported PDF must not be re-queued, got %d jobs", len(jobs))
+	}
+	comics, err := st.ListComics("")
+	if err != nil {
+		t.Fatalf("list comics: %v", err)
+	}
+	if len(comics) != 1 {
+		t.Fatalf("re-importing an unchanged PDF must not duplicate the comic, got %d", len(comics))
 	}
 }
 

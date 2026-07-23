@@ -107,9 +107,11 @@ export interface Comic {
    */
   tags: string[];
   /**
-   * Source is where the comic came from: "library", "upload" or "claimed".
-   * The client needs it to know which comics an admin may claim, and the
-   * reader needs nothing else from it. The owner's id stays server-side.
+   * Source is where the comic came from: "library", "upload", "claimed", or
+   * "library-pdf" (a PDF dropped in the library folder, converted to a
+   * server-wide comic whose file lives in the data dir). The client needs it to
+   * know which comics an admin may claim, and the reader needs nothing else from
+   * it. The owner's id stays server-side.
    */
   source: string;
   /**
@@ -246,6 +248,13 @@ export interface ReorderCollectionRequest {
 }
 export interface SetTagsRequest {
   tags: string[];
+}
+/**
+ * ReorderQueueRequest is the import queue's whole order as a list of job ids,
+ * the same idempotent full-list shape as ReorderCollectionRequest.
+ */
+export interface ReorderQueueRequest {
+  jobIds: string[];
 }
 /**
  * ProgressRequest is a client's claim about where it left off.
