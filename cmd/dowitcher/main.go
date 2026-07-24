@@ -138,8 +138,10 @@ func main() {
 	defer stop()
 
 	// The queue drains at a fixed worker count rather than running every upload on
-	// submit. Two is enough for a home instance; a busier one can raise it.
-	importWorkers := 2
+	// submit. One import at a time keeps a home instance's memory predictable,
+	// since an import already fans its encode across the cores; a busier box can
+	// raise it.
+	importWorkers := 1
 	if v := os.Getenv("DOWITCHER_IMPORT_WORKERS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -148,11 +150,23 @@ func main() {
 		importWorkers = n
 	}
 
+	// Encode concurrency is normally sized from the memory budget at import time;
+	// this pins it. 0 (unset) keeps the automatic sizing.
+	importEncodeConcurrency := 0
+	if v := os.Getenv("DOWITCHER_IMPORT_ENCODE_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Fatalf("DOWITCHER_IMPORT_ENCODE_CONCURRENCY: want a positive integer, got %q", v)
+		}
+		importEncodeConcurrency = n
+	}
+
 	im, err := imports.NewManager(st, srv.Hub(), imports.ManagerConfig{
-		UploadsDir:    uploadsDir,
-		ReportDir:     filepath.Join(dataDir, "imports"),
-		ImportTempDir: importTempDir,
-		Workers:       importWorkers,
+		UploadsDir:        uploadsDir,
+		ReportDir:         filepath.Join(dataDir, "imports"),
+		ImportTempDir:     importTempDir,
+		Workers:           importWorkers,
+		EncodeConcurrency: importEncodeConcurrency,
 	})
 	if err != nil {
 		log.Fatalf("import manager: %v", err)

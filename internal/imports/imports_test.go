@@ -121,7 +121,7 @@ func writeJPEGQ(t *testing.T, path string, im image.Image, quality int) {
 func run(t *testing.T, dir string, opts api.ImportOptions) (*Result, string) {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "out.cbz")
-	res, err := Run(context.Background(), dir, out, opts, nil)
+	res, err := Run(context.Background(), dir, out, opts, 0, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestForceCBZSuffix(t *testing.T) {
 
 func TestEmptyFolderIsAnError(t *testing.T) {
 	dir := t.TempDir()
-	_, err := Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"), api.ImportOptions{}, nil)
+	_, err := Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"), api.ImportOptions{}, 0, nil)
 	if !errors.Is(err, ErrNoImages) {
 		t.Errorf("err = %v, want ErrNoImages", err)
 	}
@@ -547,7 +547,7 @@ func TestEmptyFolderIsAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"), api.ImportOptions{}, nil)
+	_, err = Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"), api.ImportOptions{}, 0, nil)
 	if !errors.Is(err, ErrNoImages) {
 		t.Errorf("err = %v, want ErrNoImages", err)
 	}
@@ -582,7 +582,7 @@ func TestAllFilesUndecodable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "o.cbz")
-	_, err := Run(context.Background(), dir, out, api.ImportOptions{}, nil)
+	_, err := Run(context.Background(), dir, out, api.ImportOptions{}, 0, nil)
 	if !errors.Is(err, ErrNoImages) {
 		t.Errorf("err = %v, want ErrNoImages", err)
 	}
@@ -658,11 +658,11 @@ func TestBadEncodeOptionsRejected(t *testing.T) {
 	writePNG(t, filepath.Join(dir, "a.png"), synth(32, 48, 81, 0))
 
 	if _, err := Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"),
-		api.ImportOptions{Encode: "jxl"}, nil); !errors.Is(err, ErrBadEncode) {
+		api.ImportOptions{Encode: "jxl"}, 0, nil); !errors.Is(err, ErrBadEncode) {
 		t.Errorf("err = %v, want ErrBadEncode", err)
 	}
 	if _, err := Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"),
-		api.ImportOptions{Encode: "jpeg", Quality: 300}, nil); !errors.Is(err, ErrBadQuality) {
+		api.ImportOptions{Encode: "jpeg", Quality: 300}, 0, nil); !errors.Is(err, ErrBadQuality) {
 		t.Errorf("err = %v, want ErrBadQuality", err)
 	}
 }
@@ -676,7 +676,7 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	out := filepath.Join(t.TempDir(), "o.cbz")
 	// Cancel as soon as the pipeline reports any progress at all.
-	_, err := Run(ctx, dir, out, api.ImportOptions{}, func(api.ImportStage, int, int) {
+	_, err := Run(ctx, dir, out, api.ImportOptions{}, 0, func(api.ImportStage, int, int) {
 		cancel()
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -694,7 +694,7 @@ func TestProgressReachesDone(t *testing.T) {
 
 	seen := map[api.ImportStage]bool{}
 	out := filepath.Join(t.TempDir(), "o.cbz")
-	if _, err := Run(context.Background(), dir, out, api.ImportOptions{},
+	if _, err := Run(context.Background(), dir, out, api.ImportOptions{}, 0,
 		func(s api.ImportStage, done, total int) {
 			seen[s] = true
 			if done > total {
