@@ -105,10 +105,12 @@ const (
 	// has run five hundred imports does not need all of them to clear a spinner.
 	snapshotLimit = 20
 	// defaultWorkers is the queue's worker count when ManagerConfig.Workers is
-	// unset. Two lets a second book queue behind the first and start the moment it
-	// finishes, without oversubscribing a machine whose imports already fan their
-	// decode across every core.
-	defaultWorkers = 2
+	// unset. One: an import already fans its decode and encode across the cores,
+	// and each concurrent AVIF encode holds a large libaom (WASM) memory arena, so
+	// a second import running alongside doubles peak memory for no real throughput
+	// on a machine the first import already saturates. Serialising keeps the
+	// resource envelope of a home instance predictable; a bigger box can raise it.
+	defaultWorkers = 1
 )
 
 // ManagerConfig locates what a job produces.
@@ -129,6 +131,10 @@ type ManagerConfig struct {
 	MaxUploadBytes int64
 	// Workers is the number of queue workers. 0 uses defaultWorkers.
 	Workers int
+	// EncodeConcurrency pins how many pages a single import re-encodes at once.
+	// 0 lets the pipeline size it from the memory budget; a positive value pins
+	// it (DOWITCHER_IMPORT_ENCODE_CONCURRENCY).
+	EncodeConcurrency int
 }
 
 // defaultMaxExtractBytes caps a PDF's extracted images when MaxUploadBytes is
@@ -744,7 +750,7 @@ func (m *Manager) runLibraryConvert(ctx context.Context, job api.ImportJob, srcP
 	// would collide with the unique path index the moment two sources share a title.
 	comicID := store.NewID()
 	outPath := filepath.Join(m.cfg.UploadsDir, comicID+".cbz")
-	res, err := Run(ctx, srcDir, outPath, opts, m.progress(job.ID))
+	res, err := Run(ctx, srcDir, outPath, opts, m.cfg.EncodeConcurrency, m.progress(job.ID))
 	if err != nil {
 		os.Remove(outPath)
 		if m.drained(err) {
@@ -839,7 +845,7 @@ func (m *Manager) pipeline(ctx context.Context, job api.ImportJob, srcDir string
 	comicID := store.NewID()
 	outPath := filepath.Join(m.cfg.UploadsDir, comicID+".cbz")
 
-	res, err := Run(ctx, srcDir, outPath, opts, m.progress(job.ID))
+	res, err := Run(ctx, srcDir, outPath, opts, m.cfg.EncodeConcurrency, m.progress(job.ID))
 	if err != nil {
 		return err
 	}

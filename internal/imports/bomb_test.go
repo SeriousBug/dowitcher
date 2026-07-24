@@ -162,7 +162,7 @@ func TestFileCountCap(t *testing.T) {
 		}
 	}
 	out := filepath.Join(t.TempDir(), "o.cbz")
-	_, err := Run(context.Background(), dir, out, api.ImportOptions{}, nil)
+	_, err := Run(context.Background(), dir, out, api.ImportOptions{}, 0, nil)
 	if !errors.Is(err, ErrTooManyFiles) {
 		t.Fatalf("err = %v, want ErrTooManyFiles", err)
 	}
@@ -187,7 +187,7 @@ func TestFileCountCapAllowsARealBook(t *testing.T) {
 		writePNG(t, filepath.Join(dir, pad(i)+".png"), synth(32, 48, int64(i+1), 0))
 	}
 	if _, err := Run(context.Background(), dir, filepath.Join(t.TempDir(), "o.cbz"),
-		api.ImportOptions{}, nil); err != nil {
+		api.ImportOptions{}, 0, nil); err != nil {
 		t.Fatalf("a normal import must not trip the cap: %v", err)
 	}
 }

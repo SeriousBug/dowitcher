@@ -79,7 +79,10 @@ type Result struct {
 // Run builds a CBZ at outPath from the images under srcDir.
 //
 // outPath gains a .cbz suffix if it lacks one. progress may be nil.
-func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, progress ProgressFunc) (*Result, error) {
+// encodeConcurrency pins how many pages are re-encoded at once; 0 lets the
+// pipeline size it from the memory budget. It is server config, not a per-import
+// option, so it rides alongside opts rather than inside api.ImportOptions.
+func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, encodeConcurrency int, progress ProgressFunc) (*Result, error) {
 	if progress == nil {
 		progress = func(api.ImportStage, int, int) {}
 	}
@@ -168,7 +171,7 @@ func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, pr
 			return nil, err
 		}
 		defer os.RemoveAll(tmp)
-		paths, err = encodePages(ctx, pages, opts.Encode, quality, tmp, progress)
+		paths, err = encodePagesAdaptive(ctx, pages, opts.Encode, quality, tmp, encodeConcurrency, progress)
 		if err != nil {
 			return nil, err
 		}
