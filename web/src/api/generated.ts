@@ -356,7 +356,7 @@ export interface ImportOptions {
    */
   exact: boolean;
   /**
-   * Encode is "", "avif", "webp" or "jpeg". Empty copies pages verbatim.
+   * Encode is "", "webp" or "jpeg". Empty copies pages verbatim.
    */
   encode?: string;
   quality?: number /* int */;

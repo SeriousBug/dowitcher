@@ -3,13 +3,15 @@ module github.com/SeriousBug/dowitcher
 go 1.26.4
 
 require (
+	github.com/SeriousBug/webp-go-pure v0.0.0-20260725031933-7e5e084e1fd6
+	github.com/bodgit/sevenzip v1.6.5
 	github.com/coder/websocket v1.8.15
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gen2brain/avif v0.6.0
-	github.com/gen2brain/webp v0.6.4
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/pdfcpu/pdfcpu v0.13.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sync v0.22.0
@@ -19,7 +21,6 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
-	github.com/bodgit/sevenzip v1.6.5 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -39,7 +40,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/nwaples/rardecode/v2 v2.2.5 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

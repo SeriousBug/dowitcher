@@ -619,8 +619,7 @@ func TestExactModeSkipsPixelGrouping(t *testing.T) {
 }
 
 func TestEncodeFormats(t *testing.T) {
-	// AVIF goes through a WASM-hosted libaom and is slow; keep the fixture tiny.
-	for _, format := range []string{"jpeg", "webp", "avif"} {
+	for _, format := range []string{"jpeg", "webp"} {
 		t.Run(format, func(t *testing.T) {
 			dir := t.TempDir()
 			writePNG(t, filepath.Join(dir, "a.png"), synth(32, 48, 71, 0))

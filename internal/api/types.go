@@ -302,7 +302,7 @@ type ImportOptions struct {
 	Threshold float64 `json:"threshold"`
 	// Exact skips pixel grouping and dedupes on SHA-256 only.
 	Exact bool `json:"exact"`
-	// Encode is "", "avif", "webp" or "jpeg". Empty copies pages verbatim.
+	// Encode is "", "webp" or "jpeg". Empty copies pages verbatim.
 	Encode  string `json:"encode,omitempty"`
 	Quality int    `json:"quality,omitempty"`
 	// CollectionID optionally files the finished comic into a collection.
