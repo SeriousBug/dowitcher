@@ -171,7 +171,7 @@ func Run(ctx context.Context, srcDir, outPath string, opts api.ImportOptions, en
 			return nil, err
 		}
 		defer os.RemoveAll(tmp)
-		paths, err = encodePagesAdaptive(ctx, pages, opts.Encode, quality, tmp, encodeConcurrency, progress)
+		paths, err = encodePagesBounded(ctx, pages, opts.Encode, quality, tmp, encodeConcurrency, progress)
 		if err != nil {
 			return nil, err
 		}

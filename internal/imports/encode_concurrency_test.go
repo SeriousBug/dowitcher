@@ -16,7 +16,7 @@ import (
 
 // swapEncodeForTest replaces the encode pass with one whose success or failure
 // is decided by fn(limit), and returns a restore func. On success it returns
-// placeholder paths, which the adaptive wrapper's caller discards in these tests.
+// placeholder paths, which the wrapper's caller discards in these tests.
 func swapEncodeForTest(fn func(limit int) error) func() {
 	prev := encodePagesImpl
 	encodePagesImpl = func(_ context.Context, pages []*srcFile, _ string, _ int, _ string, limit int, _ ProgressFunc) ([]string, error) {
@@ -26,27 +26,6 @@ func swapEncodeForTest(fn func(limit int) error) func() {
 		return make([]string, len(pages)), nil
 	}
 	return func() { encodePagesImpl = prev }
-}
-
-func TestIsMemoryError(t *testing.T) {
-	for _, tc := range []struct {
-		msg  string
-		want bool
-	}{
-		{"avif: out of memory", true},
-		{"wasm: cannot allocate 512 MiB", true},
-		{"failed to allocate encoder", true},
-		{"out of bounds memory access", true},
-		{"grow: memory size exceeded", true},
-		{"OUT OF MEMORY", true},
-		{"unsupported image format", false},
-		{"decode png: invalid header", false},
-		{"context canceled", false},
-	} {
-		if got := isMemoryError(errors.New(tc.msg)); got != tc.want {
-			t.Errorf("isMemoryError(%q) = %v, want %v", tc.msg, got, tc.want)
-		}
-	}
 }
 
 func TestAutoEncodeConcurrencyBounds(t *testing.T) {
@@ -97,10 +76,7 @@ func TestMaxEncodePixels(t *testing.T) {
 	}
 }
 
-// fakeEncodeError makes the encoder fail deterministically the first failUntil
-// times encodePages is entered, so the adaptive retry can be exercised without a
-// real OOM. It swaps the package encoder for the duration of the test.
-func TestEncodePagesAdaptiveRetriesOnMemoryError(t *testing.T) {
+func TestEncodePagesBoundedHonoursOverride(t *testing.T) {
 	dir := t.TempDir()
 	for i := range 4 {
 		writePNG(t, filepath.Join(dir, fmt.Sprintf("p%d.png", i)), synth(40, 60, int64(i+1), 0))
@@ -115,33 +91,23 @@ func TestEncodePagesAdaptiveRetriesOnMemoryError(t *testing.T) {
 	restore := swapEncodeForTest(func(limit int) error {
 		mu.Lock()
 		sawLimits = append(sawLimits, limit)
-		fail := limit > 1
 		mu.Unlock()
-		if fail {
-			return errors.New("avif: out of memory")
-		}
 		return nil
 	})
 	defer restore()
 
-	work := t.TempDir()
-	_, err = encodePagesAdaptive(context.Background(), files, "avif", 70, work, 4, func(api.ImportStage, int, int) {})
-	if err != nil {
-		t.Fatalf("adaptive encode should have succeeded after backing off: %v", err)
+	if _, err := encodePagesBounded(context.Background(), files, "webp", 70, t.TempDir(), 3, func(api.ImportStage, int, int) {}); err != nil {
+		t.Fatalf("encode: %v", err)
 	}
-	if len(sawLimits) == 0 || sawLimits[len(sawLimits)-1] != 1 {
-		t.Errorf("expected the pass to back off to concurrency 1, saw limits %v", sawLimits)
-	}
-	// 4 -> 2 -> 1: every step must be strictly smaller than the last.
-	for i := 1; i < len(sawLimits); i++ {
-		if sawLimits[i] >= sawLimits[i-1] {
-			t.Errorf("concurrency did not shrink monotonically: %v", sawLimits)
-			break
-		}
+	if len(sawLimits) != 1 || sawLimits[0] != 3 {
+		t.Errorf("override should pin concurrency to 3, saw limits %v", sawLimits)
 	}
 }
 
-func TestEncodePagesAdaptiveDoesNotRetryOnOtherErrors(t *testing.T) {
+// An encode failure aborts the pass. There is no retry to fall back on: a
+// pure-Go encoder out of memory kills the process rather than returning, so the
+// only errors reaching here are deterministic ones a rerun cannot fix.
+func TestEncodePagesBoundedSurfacesErrors(t *testing.T) {
 	dir := t.TempDir()
 	writePNG(t, filepath.Join(dir, "p.png"), synth(40, 60, 1, 0))
 	files, err := collect(dir)
@@ -159,11 +125,11 @@ func TestEncodePagesAdaptiveDoesNotRetryOnOtherErrors(t *testing.T) {
 	})
 	defer restore()
 
-	_, err = encodePagesAdaptive(context.Background(), files, "avif", 70, t.TempDir(), 4, func(api.ImportStage, int, int) {})
+	_, err = encodePagesBounded(context.Background(), files, "webp", 70, t.TempDir(), 4, func(api.ImportStage, int, int) {})
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("want the non-memory error surfaced, got %v", err)
+		t.Fatalf("want the error surfaced, got %v", err)
 	}
 	if calls != 1 {
-		t.Errorf("a non-memory error must not retry, encoder ran %d times", calls)
+		t.Errorf("the pass must not retry, encoder ran %d times", calls)
 	}
 }

@@ -46,7 +46,6 @@ const STAGE_LABEL: Record<string, string> = {
 
 const ENCODINGS = [
   { value: "", label: "Keep as-is" },
-  { value: "avif", label: "AVIF" },
   { value: "webp", label: "WebP" },
   { value: "jpeg", label: "JPEG" },
 ];
