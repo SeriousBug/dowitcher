@@ -6,7 +6,8 @@ import { css } from "styled-system/css";
 import { hstack, vstack } from "styled-system/patterns";
 import { Button } from "../components/Button";
 import { ClaimButton } from "../components/ClaimButton";
-import { DeleteComicButton, deletable } from "../components/DeleteComicButton";
+import { DeleteComicButton } from "../components/DeleteComicButton";
+import { HideButton } from "../components/HideButton";
 import { ComicGrid, ComicGridSkeleton, ComicTile, TileButton } from "../components/ComicGrid";
 import { DropOverlay } from "../components/DropOverlay";
 import { EmptyState } from "../components/EmptyState";
@@ -372,9 +373,10 @@ export function LibraryPage() {
                     >
                       <TagIcon size={14} />
                     </TileButton>
+                    {user?.isAdmin && <HideButton comic={comic} />}
                     {/* Last, so the destructive one is furthest from the hover
                         buttons anyone reaches for routinely. */}
-                    {deletable(comic, user?.isAdmin ?? false) && <DeleteComicButton comic={comic} />}
+                    <DeleteComicButton comic={comic} isAdmin={user?.isAdmin ?? false} />
                   </>
                 }
               />

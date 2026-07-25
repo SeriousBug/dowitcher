@@ -5,6 +5,8 @@ import type { PublicKeyCredentialCreationOptionsJSON } from "@simplewebauthn/bro
 import {
   Copy,
   Check,
+  Eye,
+  EyeOff,
   HardDrive,
   KeyRound,
   LogOut,
@@ -24,8 +26,18 @@ import { useAuth } from "../auth/AuthProvider";
 import { useLiveData } from "../live/LiveData";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
-import { formatDate, formatRelative } from "../lib/format";
-import type { Invite, SignedOutOthers, User } from "../api/generated";
+import { comicLabel, formatDate, formatRelative } from "../lib/format";
+import type { Comic, HiddenComicsResponse, Invite, SignedOutOthers, User } from "../api/generated";
+
+// Why a hidden comic could not simply have been deleted, which is the question
+// this list raises. A library comic's file is under the read-only root.
+const SOURCE_LABEL: Record<string, string> = {
+  library: "Library folder",
+  claimed: "Claimed",
+  upload: "Upload",
+  "library-pdf": "Converted PDF",
+  "library-archive": "Converted archive",
+};
 
 interface CreationOptions {
   publicKey: PublicKeyCredentialCreationOptionsJSON;
@@ -69,6 +81,30 @@ export function SettingsPage() {
     queryKey: ["users"],
     queryFn: () => http.get<User[]>("/api/users"),
     enabled: Boolean(user?.isAdmin),
+  });
+
+  // The hidden listing is the only place a hidden comic appears, so this section
+  // is the only way back from a hide.
+  const hiddenQuery = useQuery({
+    queryKey: ["hidden-comics"],
+    queryFn: () => http.get<HiddenComicsResponse>("/api/comics/hidden"),
+    enabled: Boolean(user?.isAdmin),
+  });
+
+  const unhideComic = useMutation({
+    mutationFn: (comic: Comic) => http.post<{ ok: boolean }>(`/api/comics/${comic.id}/unhide`),
+    onSuccess: (_, comic) => {
+      queryClient.invalidateQueries({ queryKey: ["hidden-comics"] });
+      queryClient.invalidateQueries({ queryKey: ["comics"] });
+      // A hidden comic matched no tag, so putting it back moves the tag counts.
+      queryClient.invalidateQueries({ queryKey: ["tags"] });
+      toaster.create({
+        type: "success",
+        title: "Back on the shelf",
+        description: `${comicLabel(comic)} is visible again, with its tags and everyone's reading position intact.`,
+      });
+    },
+    onError: failed("Couldn't unhide that"),
   });
 
   async function copyInvite(token: string) {
@@ -192,6 +228,7 @@ export function SettingsPage() {
 
   const invites = invitesQuery.data ?? [];
   const users = usersQuery.data ?? [];
+  const hiddenComics = hiddenQuery.data?.comics ?? [];
 
   return (
     <div className={vstack({ gap: "8", alignItems: "stretch", maxW: "3xl" })}>
@@ -406,6 +443,43 @@ export function SettingsPage() {
                       <Trash2 size={15} />
                     </button>
                   </div>
+                </Row>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {user?.isAdmin && (
+        <Section
+          icon={<EyeOff size={17} className={css({ color: "textMuted" })} />}
+          title="Hidden comics"
+        >
+          {hiddenQuery.isLoading ? (
+            <p className={css({ color: "textMuted", fontSize: "sm" })}>Looking…</p>
+          ) : hiddenComics.length === 0 ? (
+            <p className={css({ color: "textMuted", fontSize: "sm" })}>
+              Nothing is hidden. Hiding a comic takes it off every shelf without
+              deleting anything, which is the way to retire a duplicate whose file
+              lives in the read-only library folder.
+            </p>
+          ) : (
+            <div className={vstack({ gap: "2", alignItems: "stretch" })}>
+              {hiddenComics.map((comic) => (
+                <Row
+                  key={comic.id}
+                  title={comicLabel(comic)}
+                  badge={SOURCE_LABEL[comic.source]}
+                  subtitle={comic.path}
+                >
+                  <Button
+                    variant="ghost"
+                    icon={<Eye size={15} />}
+                    busy={unhideComic.isPending && unhideComic.variables?.id === comic.id}
+                    onClick={() => unhideComic.mutate(comic)}
+                  >
+                    Unhide
+                  </Button>
                 </Row>
               ))}
             </div>

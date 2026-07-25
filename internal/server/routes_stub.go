@@ -151,6 +151,13 @@ func (s *Server) registerLibraryRoutes() {
 	s.mux.HandleFunc("PUT /api/comics/{id}/progress", s.requireAuth(s.handleSetProgress))
 	s.mux.HandleFunc("PUT /api/comics/{id}/tags", s.requireAuth(s.handleSetTags))
 	s.mux.HandleFunc("DELETE /api/comics/{id}", s.requireAuth(s.handleDeleteComic))
+	// Hiding is the soft delete for comics that cannot be deleted at all, and it
+	// takes the comic off everyone's shelf, so it is an admin's call for the same
+	// reason claiming is. The listing is the only way back from one, so it is
+	// gated the same way.
+	s.mux.HandleFunc("GET /api/comics/hidden", s.requireAdmin(s.handleListHiddenComics))
+	s.mux.HandleFunc("POST /api/comics/{id}/hide", s.requireAdmin(s.handleHideComic))
+	s.mux.HandleFunc("POST /api/comics/{id}/unhide", s.requireAdmin(s.handleUnhideComic))
 	// Claiming takes a library comic out of every other user's view, so it is an
 	// admin's call rather than a first-come-first-served race between users.
 	s.mux.HandleFunc("POST /api/comics/{id}/claim", s.requireAdmin(s.handleClaimComic))

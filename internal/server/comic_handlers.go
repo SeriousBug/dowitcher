@@ -628,6 +628,73 @@ func (s *Server) handleUnclaimComic(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handleHideComic soft-deletes a comic: it drops out of every listing, search
+// and collection for everybody, while its row, its file, its tags and everyone's
+// reading position stay exactly where they are.
+//
+// This is what a library comic gets instead of a delete. Its file is under the
+// read-only library root, so removing the row would both destroy the tags and
+// progress and let the next scan insert the comic again as a fresh, stripped
+// duplicate. Hiding keeps the row, which is what makes it survivable and what
+// makes it reversible.
+func (s *Server) handleHideComic(w http.ResponseWriter, r *http.Request) {
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	s.setHidden(w, comic.ID, true)
+}
+
+// handleUnhideComic puts a hidden comic back. It looks the comic up through the
+// hidden-inclusive rule, since the ordinary one can no longer see it.
+func (s *Server) handleUnhideComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	id := r.PathValue("id")
+	if _, err := s.store.GetComicWithHidden(u.ID, id); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("get hidden comic %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	s.setHidden(w, id, false)
+}
+
+func (s *Server) setHidden(w http.ResponseWriter, id string, hidden bool) {
+	if err := s.store.SetComicHidden(id, hidden); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("set comic %s hidden=%v: %v", id, hidden, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	// Every shelf on every device just changed, and nothing else would tell them.
+	// Comics stays nil on purpose: an empty signal is identical for every user,
+	// so it is the one shape of this message that may be broadcast to everyone.
+	s.hub.Broadcast(api.WSMessage{Type: api.WSTypeComics})
+	writeOK(w)
+}
+
+// handleListHiddenComics is the only listing that returns hidden comics, so it
+// is the only way back from a hide.
+func (s *Server) handleListHiddenComics(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comics, err := s.store.ListHiddenComics(u.ID)
+	if err != nil {
+		log.Printf("list hidden comics: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if comics == nil {
+		comics = []api.Comic{}
+	}
+	writeJSON(w, http.StatusOK, api.HiddenComicsResponse{Comics: comics})
+}
+
 func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
 	tags, err := s.store.ListTags(u.ID)

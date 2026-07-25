@@ -268,6 +268,12 @@ var migrations = []string{
 		exact_dupes,near_dupes,message,comic_id,started_at,finished_at FROM import_jobs;`,
 	`DROP TABLE import_jobs;`,
 	`ALTER TABLE import_jobs_v2 RENAME TO import_jobs;`,
+	// Hiding is the soft delete for comics whose file cannot be removed: a
+	// library CBZ lives under a read-only root, so the row is the only thing
+	// dowitcher can act on. Keeping the row is the whole point — it holds the
+	// tags and everyone's reading position, and it is what stops the next scan
+	// inserting the comic again as a stripped duplicate.
+	`ALTER TABLE comics ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is

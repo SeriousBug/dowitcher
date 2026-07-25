@@ -9,22 +9,29 @@ import { TileButton } from "./ComicGrid";
 import type { Comic } from "../api/generated";
 
 /**
- * Which comics the server will actually delete, mirroring the switch in
- * handleDeleteComic so a button that shows here is one the server honours.
- * A library or claimed comic is missing on purpose: its file lives under the
- * read-only library root, so dropping the row would only lose the tags and
- * reading position and then resurrect the comic on the next scan.
+ * Why the server would refuse to delete this comic, or undefined if it would
+ * allow it. Mirrors store.CanDeleteComic so the button's enabled state matches
+ * what the request would actually do.
+ *
+ * The button stays on the tile either way, greyed out with the reason as its
+ * tooltip: "why is there no delete button on this one" is the question the
+ * read-only library root provokes, and a missing button cannot answer it.
  */
-export function deletable(comic: Comic, isAdmin: boolean): boolean {
-  if (comic.source === "upload") return comic.ownedByMe || isAdmin;
-  if (comic.source === "library-pdf" || comic.source === "library-archive") return isAdmin;
-  return false;
+export function deleteRefusal(comic: Comic, isAdmin: boolean): string | undefined {
+  if (comic.source === "upload") {
+    return comic.ownedByMe || isAdmin ? undefined : "Only the uploader can delete this upload";
+  }
+  if (comic.source === "library-pdf" || comic.source === "library-archive") {
+    return isAdmin ? undefined : "Only an admin can delete a server-wide comic";
+  }
+  return "In the library folder, so it has to be deleted there — the folder is read-only to Dowitcher";
 }
 
-export function DeleteComicButton({ comic }: { comic: Comic }) {
+export function DeleteComicButton({ comic, isAdmin }: { comic: Comic; isAdmin: boolean }) {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const converted = comic.source === "library-pdf" || comic.source === "library-archive";
+  const refusal = deleteRefusal(comic, isAdmin);
 
   const act = useMutation({
     mutationFn: () => http.del<{ ok: boolean }>(`/api/comics/${comic.id}`),
@@ -52,7 +59,11 @@ export function DeleteComicButton({ comic }: { comic: Comic }) {
 
   return (
     <>
-      <TileButton label={`Delete ${comicLabel(comic)}`} onClick={() => setConfirming(true)}>
+      <TileButton
+        label={`Delete ${comicLabel(comic)}`}
+        disabled={refusal}
+        onClick={() => setConfirming(true)}
+      >
         <Trash2 size={14} />
       </TileButton>
       <ConfirmDialog

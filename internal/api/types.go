@@ -101,6 +101,11 @@ type Comic struct {
 	// comic they claimed. It answers "may I unclaim this" without naming the
 	// owner of a comic the caller does not own.
 	OwnedByMe bool `json:"ownedByMe"`
+	// Hidden is the soft delete: an admin has taken this comic off every shelf
+	// without touching its file, tags or reading positions. Only the admin
+	// hidden listing ever returns a comic with this set, so everywhere else it
+	// is false — it is here so that listing can offer an unhide.
+	Hidden bool `json:"hidden"`
 }
 
 // Page is one image inside a CBZ. Name is the zip entry name.
@@ -137,6 +142,13 @@ type ComicList struct {
 	Total  int `json:"total"`
 	Offset int `json:"offset"`
 	Limit  int `json:"limit"`
+}
+
+// HiddenComicsResponse is the admin listing of soft-deleted comics. It is not
+// paginated: hidden comics are the handful someone deliberately took off the
+// shelf, not a library-sized list, and the page exists to undo them.
+type HiddenComicsResponse struct {
+	Comics []Comic `json:"comics"`
 }
 
 // Progress is one user's position in one comic. Page is 0-based.
@@ -334,13 +346,18 @@ const (
 	// WSTypeLibrary is scan progress: a property of the server, identical for
 	// every user, and the only type the hub's replay cache accepts.
 	WSTypeLibrary WSType = "library"
-	// WSTypeComics is declared but NOTHING PRODUCES IT. Whoever writes that
-	// producer, read this first: a comic list is filtered by visibility, so it
-	// is per-user by definition. It must go out through Hub.BroadcastTo and
-	// never Hub.Broadcast, or one user's library is fanned out to every
-	// connected client. It must also never enter the hub's replay cache, which
-	// is keyed by message type alone and would hand that payload to whoever
-	// connects next. server.cacheable is what enforces the second half.
+	// WSTypeComics means "your shelf changed, refetch it". The only producer is
+	// hide/unhide, and it deliberately sends the message with Comics nil: an
+	// empty message is the same for every user, so it can go out through
+	// Hub.Broadcast.
+	//
+	// Anyone tempted to start filling in Comics, read this first. A comic list is
+	// filtered by visibility, so a populated one is per-user by definition. It
+	// would have to go out through Hub.BroadcastTo and never Hub.Broadcast, or
+	// one user's library is fanned out to every connected client. It must also
+	// never enter the hub's replay cache, which is keyed by message type alone
+	// and would hand that payload to whoever connects next. server.cacheable is
+	// what enforces the second half, and it excludes this type today.
 	WSTypeComics WSType = "comics"
 	// WSTypeJobs and WSTypeJob are per-user: an import belongs to the user who
 	// started it, and its name is the folder they picked, which is usually the

@@ -181,6 +181,21 @@ func (s *Server) build() *mcp.Server {
 	}, s.claimComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "hide_comic",
+		Description: "Admin only. Soft-delete a comic: it drops out of every listing, search and collection for every user, while its file, its tags and everyone's reading position are left untouched. This is what to use on a comic delete_comic refuses, such as a duplicate sitting in the read-only library folder. Reversible with unhide_comic.",
+	}, s.hideComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "unhide_comic",
+		Description: "Admin only. Put a hidden comic back on the shelf, with its tags and reading positions intact.",
+	}, s.unhideComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_hidden_comics",
+		Description: "Admin only. List the comics that have been hidden. This is the only listing that returns them, so it is the only way to find one in order to unhide it.",
+	}, s.listHiddenComics)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "delete_comic",
 		Description: "Permanently delete a comic and its CBZ file, along with everyone's tags and reading position on it. Only your own uploads can be deleted (an admin can delete any upload), plus, for admins, comics converted from a PDF or archive dropped in the library folder. Comics the library scanner manages cannot be deleted here — remove those from the library folder instead. This cannot be undone, so confirm with the user before calling it.",
 	}, s.deleteComic)

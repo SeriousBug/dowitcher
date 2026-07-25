@@ -666,6 +666,20 @@ func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
 // the two NULL owner_ids of a library comic in a library owner's collection
 // still match; library comics are covered by the source arm regardless.
 func visibleComics(userID string) (string, []any) {
+	frag, args := visibleComicsWithHidden(userID)
+	return frag + ` AND comics.hidden=0`, args
+}
+
+// visibleComicsWithHidden is the same rule without the hidden filter, for the
+// two admin paths that have to reach a hidden comic: listing them and unhiding
+// one. Everything else must use visibleComics — a hidden comic is meant to be
+// gone from every listing, every search and every collection.
+//
+// It is still the visibility rule and not a bypass: an admin sees the hidden
+// comics they would otherwise be able to see, which is exactly the set they
+// could have hidden in the first place. Hiding is not a way to read somebody
+// else's uploads.
+func visibleComicsWithHidden(userID string) (string, []any) {
 	const frag = `(comics.source IN ('library','library-pdf','library-archive')
 		OR comics.owner_id=?
 		OR EXISTS (
@@ -707,7 +721,7 @@ type ComicRow struct {
 // the scanner still diffs against what the file actually says.
 const comicCols = `comics.id,comics.path,` + effectiveTitle + `,comics.series,comics.number,comics.volume,
 	comics.summary,comics.page_count,comics.file_size,comics.added_at,comics.modified_at,comics.missing,
-	comics.owner_id,comics.source`
+	comics.owner_id,comics.source,comics.hidden`
 
 // effectiveTitle is the display title expression: the override when set, else
 // the scanned title. Named once so the listing filter and the column list agree.
@@ -715,6 +729,11 @@ const effectiveTitle = `COALESCE(NULLIF(comics.title_override,''),comics.title)`
 
 // UpsertComic inserts a comic or updates the existing row with the same path,
 // keeping its id so tags and progress stay attached across a rescan.
+//
+// The conflict clause refreshes what the file says and nothing else. owner_id
+// and source are omitted so a rescan cannot un-claim a comic, and hidden is
+// omitted for the same reason: the scanner walks the root on a timer, so a hide
+// that a rescan reset would last minutes.
 func (s *Store) UpsertComic(c ComicRow) error {
 	var owner any
 	if c.OwnerID != "" {
@@ -910,6 +929,52 @@ func (s *Store) DeleteComic(id string) error {
 	return nil
 }
 
+// SetComicHidden hides or unhides a comic server-wide. The row and its file are
+// left alone: hiding is the soft delete, so tags, reading positions and
+// collection memberships all survive an unhide.
+func (s *Store) SetComicHidden(id string, hidden bool) error {
+	res, err := s.db.Exec(`UPDATE comics SET hidden=? WHERE id=?`, boolInt(hidden), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetComicWithHidden is GetComic without the hidden filter, so an admin can look
+// up a comic in order to unhide it. Every other read path must use GetComic.
+func (s *Store) GetComicWithHidden(userID, id string) (api.Comic, error) {
+	vis, args := visibleComicsWithHidden(userID)
+	all := append([]any{}, args...)
+	all = append(all, id)
+	rows, err := s.db.Query(`SELECT `+comicCols+` FROM comics WHERE `+vis+` AND comics.id=?`, all...)
+	if err != nil {
+		return api.Comic{}, err
+	}
+	out, err := s.scanComics(userID, rows)
+	if err != nil {
+		return api.Comic{}, err
+	}
+	if len(out) == 0 {
+		return api.Comic{}, ErrNotFound
+	}
+	return out[0], nil
+}
+
+// ListHiddenComics returns the hidden comics userID may see, most recently added
+// first. This is the only listing that returns hidden rows.
+func (s *Store) ListHiddenComics(userID string) ([]api.Comic, error) {
+	vis, args := visibleComicsWithHidden(userID)
+	rows, err := s.db.Query(`SELECT `+comicCols+` FROM comics WHERE `+vis+`
+		AND comics.hidden=1 ORDER BY comics.added_at DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.scanComics(userID, rows)
+}
+
 // GetComic returns one comic if userID may see it, else ErrNotFound.
 func (s *Store) GetComic(userID, id string) (api.Comic, error) {
 	vis, args := visibleComics(userID)
@@ -1056,14 +1121,15 @@ func (s *Store) scanComics(userID string, rows *sql.Rows) ([]api.Comic, error) {
 	var ids []string
 	for rows.Next() {
 		var c api.Comic
-		var missing int
+		var missing, hidden int
 		var owner sql.NullString
 		if err := rows.Scan(&c.ID, &c.Path, &c.Title, &c.Series, &c.Number, &c.Volume,
 			&c.Summary, &c.PageCount, &c.FileSize, &c.AddedAt, &c.ModifiedAt, &missing,
-			&owner, &c.Source); err != nil {
+			&owner, &c.Source, &hidden); err != nil {
 			return nil, err
 		}
 		c.Missing = missing != 0
+		c.Hidden = hidden != 0
 		c.OwnedByMe = owner.Valid && owner.String == userID
 		c.Tags = []string{}
 		out = append(out, c)

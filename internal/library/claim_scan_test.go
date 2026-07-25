@@ -124,3 +124,44 @@ func assertClaimed(t *testing.T, st *store.Store, path, wantID, wantOwner string
 	}
 	return row
 }
+
+// TestScanKeepsAHide is the same guarantee for the soft delete, and it matters
+// more: the scanner re-walks the root on a timer, so a hide the upsert reset
+// would come undone on its own within minutes.
+func TestScanKeepsAHide(t *testing.T) {
+	l, st, root, _ := newTestLib(t)
+	u := mustUser(t, st)
+	writeCBZ(t, root, "Dupe 01.cbz", 2, 10)
+	if err := l.Scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	before := comicAt(t, st, "Dupe 01.cbz")
+	if err := st.SetComicHidden(before.ID, true); err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+
+	// A plain rescan, then one that finds the file replaced: neither is allowed
+	// to put the comic back on the shelf.
+	if err := l.Scan(context.Background()); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	writeCBZ(t, root, "Dupe 01.cbz", 5, 90)
+	if err := l.Scan(context.Background()); err != nil {
+		t.Fatalf("rescan after replace: %v", err)
+	}
+
+	if _, err := st.GetComic(u.ID, before.ID); err == nil {
+		t.Error("a rescan must not unhide a comic")
+	}
+	hidden, err := st.ListHiddenComics(u.ID)
+	if err != nil {
+		t.Fatalf("list hidden: %v", err)
+	}
+	if len(hidden) != 1 || hidden[0].ID != before.ID {
+		t.Fatalf("the hidden comic should still be the same row, got %+v", hidden)
+	}
+	// Still the scanner's row to refresh — hiding is not freezing.
+	if hidden[0].PageCount != 5 {
+		t.Errorf("page count = %d, want 5: a hidden comic stopped being refreshed", hidden[0].PageCount)
+	}
+}

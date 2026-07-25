@@ -217,6 +217,54 @@ func TestMCPClaimIsAdminOnly(t *testing.T) {
 	}
 }
 
+// TestMCPHideAndUnhide: hiding takes a library comic off everyone's shelf, the
+// hidden listing is the only place it survives, and unhide puts it back.
+func TestMCPHideAndUnhide(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+
+	alice := connect(t, e.url, token(t, e.store, e.aliceID))
+	call(t, alice, "hide_comic", ComicIDInput{ComicID: lib}, nil)
+
+	// Gone for bob as well: the flag is server-wide, not per-user.
+	bob := connect(t, e.url, token(t, e.store, e.bobID))
+	var bobList ListComicsOutput
+	call(t, bob, "list_comics", ListComicsInput{}, &bobList)
+	if hasTitle(bobList.Comics, "Public") {
+		t.Error("a hidden comic should be off every user's shelf")
+	}
+
+	var hidden ListComicsOutput
+	call(t, alice, "list_hidden_comics", struct{}{}, &hidden)
+	if !hasTitle(hidden.Comics, "Public") {
+		t.Errorf("the hidden listing should carry it, got %+v", hidden.Comics)
+	}
+
+	call(t, alice, "unhide_comic", ComicIDInput{ComicID: lib}, nil)
+	call(t, bob, "list_comics", ListComicsInput{}, &bobList)
+	if !hasTitle(bobList.Comics, "Public") {
+		t.Error("an unhidden comic should be back on the shelf")
+	}
+}
+
+// TestMCPHideIsAdminOnly: the gate the HTTP routes get from requireAdmin is
+// applied in this layer too, for all three tools.
+func TestMCPHideIsAdminOnly(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+
+	bob := connect(t, e.url, token(t, e.store, e.bobID))
+	callErr(t, bob, "hide_comic", ComicIDInput{ComicID: lib})
+	callErr(t, bob, "unhide_comic", ComicIDInput{ComicID: lib})
+	callErr(t, bob, "list_hidden_comics", struct{}{})
+
+	var list ListComicsOutput
+	call(t, bob, "list_comics", ListComicsInput{}, &list)
+	if !hasTitle(list.Comics, "Public") {
+		t.Error("a refused hide must leave the comic on the shelf")
+	}
+}
+
 // TestMCPDeleteComic: an owner deletes their own upload, file and all, and a
 // library comic is refused even to an admin because its file is not ours.
 func TestMCPDeleteComic(t *testing.T) {
