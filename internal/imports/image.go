@@ -10,18 +10,19 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 
-	// Decoder registrations. gen2brain/{avif,webp} register their formats too,
-	// so x/image/webp is deliberately absent: pulling it in would register a
-	// second "webp" matcher for no gain, and gen2brain's is the one that can
-	// also encode.
+	// Decoder registrations. WebP decoding is x/image's rather than gen2brain's,
+	// the same one internal/cbz uses: both are pure Go, and x/image's is a plain
+	// Go decoder where gen2brain's runs libwebp under wazero and holds an order
+	// of magnitude more memory per image. Encoding no longer goes through
+	// gen2brain, so nothing needs its registration.
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 
 	_ "github.com/gen2brain/avif"
-	_ "github.com/gen2brain/webp"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 // thumbSize is package.py's THUMB. The thumbnail is squashed to a square rather

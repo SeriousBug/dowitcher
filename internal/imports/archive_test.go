@@ -101,7 +101,7 @@ func TestConvertsLibraryArchive(t *testing.T) {
 		t.Fatalf("the source archive should be left in place: %v", err)
 	}
 
-	// The CBZ is in the uploads dir, and its pages defaulted to AVIF.
+	// The CBZ is in the uploads dir, and its pages defaulted to WebP.
 	cbzPath := filepath.Join(m.cfg.UploadsDir, row.Path)
 	a, err := cbz.Open(cbzPath)
 	if err != nil {
@@ -109,8 +109,8 @@ func TestConvertsLibraryArchive(t *testing.T) {
 	}
 	defer a.Close()
 	for _, name := range a.PageNames() {
-		if !strings.HasSuffix(strings.ToLower(name), ".avif") {
-			t.Fatalf("page %q is not AVIF; the convert path should default to AVIF", name)
+		if !strings.HasSuffix(strings.ToLower(name), ".webp") {
+			t.Fatalf("page %q is not WebP; the convert path should default to WebP", name)
 		}
 	}
 }

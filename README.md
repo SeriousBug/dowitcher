@@ -16,7 +16,7 @@ Dowitcher ships as a single static Go binary with the web UI embedded, on a `dis
   keeps its tags and reading progress: the scanner matches on content hash when the path misses.
 - **Syncs reading position.** Progress is per user, per comic, so you can start on a laptop and
   finish on a phone.
-- **Imports folders of images.** Hashes, groups near-duplicate pages, optionally re-encodes to AVIF,
+- **Imports folders of images.** Hashes, groups near-duplicate pages, optionally re-encodes to WebP,
   WebP or JPEG, and packages the result into a deduped CBZ. Progress streams over a WebSocket.
 - **Tags and collections.** Tags are yours alone — nobody else on the server sees them, and you
   don't see theirs. Collections are ordered, owned, and private by default.
