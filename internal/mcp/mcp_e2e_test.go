@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,10 +33,11 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 type e2e struct {
-	store   *store.Store
-	url     string
-	aliceID string
-	bobID   string
+	store      *store.Store
+	url        string
+	uploadsDir string
+	aliceID    string
+	bobID      string
 }
 
 // connect opens an MCP session authenticated with token against the test server.
@@ -108,9 +112,18 @@ func setup(t *testing.T) e2e {
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/alice/a.cbz", Title: "AliceOnly", Source: store.SourceUpload, OwnerID: alice.ID, PageCount: 5}))
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/bob/b.cbz", Title: "BobOnly", Source: store.SourceUpload, OwnerID: bob.ID, PageCount: 7}))
 
-	srv := httptest.NewServer(New(st, "test", "http://mcp.test").Handler())
+	// The upload rows point at real files, so delete_comic can be checked for
+	// having removed the bytes and not only the row.
+	uploads := t.TempDir()
+	for _, rel := range []string{"uploads/alice/a.cbz", "uploads/bob/b.cbz"} {
+		p := filepath.Join(uploads, rel)
+		must(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		must(t, os.WriteFile(p, []byte("PK"), 0o644))
+	}
+
+	srv := httptest.NewServer(New(st, "test", "http://mcp.test", uploads).Handler())
 	t.Cleanup(srv.Close)
-	return e2e{store: st, url: srv.URL, aliceID: alice.ID, bobID: bob.ID}
+	return e2e{store: st, url: srv.URL, uploadsDir: uploads, aliceID: alice.ID, bobID: bob.ID}
 }
 
 func must(t *testing.T, err error) {
@@ -201,6 +214,55 @@ func TestMCPClaimIsAdminOnly(t *testing.T) {
 	call(t, bob2, "list_comics", ListComicsInput{}, &bobList)
 	if hasTitle(bobList.Comics, "Public") {
 		t.Error("after an admin claim, the comic must drop out of bob's view")
+	}
+}
+
+// TestMCPDeleteComic: an owner deletes their own upload, file and all, and a
+// library comic is refused even to an admin because its file is not ours.
+func TestMCPDeleteComic(t *testing.T) {
+	e := setup(t)
+	bobUpload := comicID(t, e.store, e.bobID, "BobOnly")
+	lib := comicID(t, e.store, e.aliceID, "Public")
+
+	bob := connect(t, e.url, token(t, e.store, e.bobID))
+	var out okOutput
+	call(t, bob, "delete_comic", ComicIDInput{ComicID: bobUpload}, &out)
+	if !out.OK {
+		t.Error("delete_comic should report ok")
+	}
+	if _, err := e.store.GetComic(e.bobID, bobUpload); err == nil {
+		t.Error("the deleted comic should be gone from bob's view")
+	}
+	if _, err := os.Stat(filepath.Join(e.uploadsDir, "uploads/bob/b.cbz")); !os.IsNotExist(err) {
+		t.Errorf("the CBZ should have been removed, stat err: %v", err)
+	}
+
+	// Alice is an admin, so this is the source rule refusing her, not permissions.
+	alice := connect(t, e.url, token(t, e.store, e.aliceID))
+	msg := callErr(t, alice, "delete_comic", ComicIDInput{ComicID: lib})
+	if !strings.Contains(msg, "library folder") {
+		t.Errorf("expected the library-folder refusal, got %q", msg)
+	}
+	if _, err := e.store.GetComic(e.aliceID, lib); err != nil {
+		t.Errorf("the refused delete must leave the library comic in place: %v", err)
+	}
+}
+
+// TestMCPDeleteComicRefusesOthersUpload: seeing a comic is not licence to delete
+// it, and a non-admin cannot delete somebody else's upload.
+func TestMCPDeleteComicRefusesOthersUpload(t *testing.T) {
+	e := setup(t)
+	aliceUpload := comicID(t, e.store, e.aliceID, "AliceOnly")
+
+	// Bob cannot see it at all, so it reads as missing rather than forbidden.
+	bob := connect(t, e.url, token(t, e.store, e.bobID))
+	callErr(t, bob, "delete_comic", ComicIDInput{ComicID: aliceUpload})
+
+	if _, err := e.store.GetComic(e.aliceID, aliceUpload); err != nil {
+		t.Errorf("alice's upload should survive bob's attempt: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.uploadsDir, "uploads/alice/a.cbz")); err != nil {
+		t.Errorf("alice's file should survive bob's attempt: %v", err)
 	}
 }
 

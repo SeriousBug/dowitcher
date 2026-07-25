@@ -39,6 +39,53 @@ const (
 	SourceLibraryArchive = "library-archive"
 )
 
+// Why a delete was refused. The text is what the caller is shown verbatim, and
+// the identity is what a transport uses to pick its own failure code — the HTTP
+// layer answers 403 for the first two and 400 for the third.
+var (
+	ErrDeleteNotOwner = errors.New("only the uploader can delete an upload")
+	ErrDeleteNotAdmin = errors.New("only an admin can delete a server-wide comic")
+	ErrDeleteManaged  = errors.New("library comics are managed from the library folder, not here")
+)
+
+// CanDeleteComic is the rule for who may delete a comic, in one place because
+// both the HTTP handler and the MCP tool have to apply it and a rule that drifts
+// between the two is a rule that deletes somebody else's shelf.
+//
+// Seeing a comic is not enough: a shared collection grants read, never delete.
+// A library or claimed comic is not deletable at all — its file lives under the
+// read-only library root, so dropping the row would lose the tags and progress
+// and then resurrect the comic, stripped, on the next scan. Deleting one means
+// removing its file from the folder. A converted comic (a dropped PDF or
+// archive) is the opposite case: its CBZ is server-managed in the data dir, so
+// it really is deletable, and being owned by nobody makes it an admin's call.
+func CanDeleteComic(row ComicRow, userID string, isAdmin bool) error {
+	switch row.Source {
+	case SourceUpload:
+		if row.OwnerID != userID && !isAdmin {
+			return ErrDeleteNotOwner
+		}
+		return nil
+	case SourceLibraryPDF, SourceLibraryArchive:
+		if !isAdmin {
+			return ErrDeleteNotAdmin
+		}
+		return nil
+	}
+	return ErrDeleteManaged
+}
+
+// ComicFileDir reports which of the two roots a comic's file sits under: the
+// uploads (data) dir for anything dowitcher wrote itself, the library root for
+// anything it only ever reads. row.Path is relative to whichever it returns.
+func ComicFileDir(row ComicRow, uploadsDir, libraryRoot string) string {
+	switch row.Source {
+	case SourceUpload, SourceLibraryPDF, SourceLibraryArchive:
+		return uploadsDir
+	}
+	return libraryRoot
+}
+
 // --- Users ---
 
 // CountUsers returns the number of registered users.

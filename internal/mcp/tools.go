@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
@@ -438,6 +441,37 @@ func (s *Server) claimComic(ctx context.Context, _ *mcp.CallToolRequest, in Comi
 		return nil, ComicOutput{}, dbErr(err)
 	}
 	return nil, ComicOutput{Comic: viewComic(c)}, nil
+}
+
+// --- delete_comic ---
+
+func (s *Server) deleteComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	// Visibility first, so a comic the caller cannot see reads as missing rather
+	// than as one they lack permission to delete.
+	if _, err := s.store.GetComic(u.ID, in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	row, err := s.store.ComicRowByID(in.ComicID)
+	if err != nil {
+		return nil, okOutput{}, dbErr(err)
+	}
+	if err := store.CanDeleteComic(row, u.ID, u.IsAdmin); err != nil {
+		return nil, okOutput{}, err
+	}
+	if err := s.store.DeleteComic(in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	// Same order as the HTTP handler: a leftover file is dead weight, whereas a
+	// row whose file is gone is a comic that opens to an error. CanDeleteComic
+	// has already ruled out every source that lives under the library root.
+	if err := os.Remove(filepath.Join(s.uploadsDir, row.Path)); err != nil && !os.IsNotExist(err) {
+		log.Printf("mcp delete comic file %s: %v", row.Path, err)
+	}
+	return nil, okOutput{OK: true}, nil
 }
 
 type okOutput struct {

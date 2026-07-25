@@ -132,7 +132,7 @@ func (s *Server) routes() {
 	// more specific than the "/" catch-all, so Go 1.22 mux precedence gives them
 	// priority regardless of registration order.
 	if s.cfg.MCPEnabled {
-		h := mcp.New(s.store, s.cfg.Version, s.cfg.Origin).Handler()
+		h := mcp.New(s.store, s.cfg.Version, s.cfg.Origin, s.cfg.UploadsDir).Handler()
 		s.mux.Handle("/mcp", h)
 		s.mux.Handle("/mcp/", h)
 		s.registerOAuthRoutes()
