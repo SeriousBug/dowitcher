@@ -16,6 +16,9 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
+# The build context excludes .git, so the binary cannot date itself from the
+# commit — the version has to be handed in. CI passes the tag, or dev-<date>.
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -35,7 +38,7 @@ COPY --from=web /app/web/dist ./web/dist
 # decoder, which is what this image would fall back to anyway: there is no
 # system libavif in here to find.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -tags nodynamic -ldflags="-s -w" -o /dowitcher ./cmd/dowitcher
+    go build -trimpath -tags nodynamic -ldflags="-s -w -X main.version=${VERSION}" -o /dowitcher ./cmd/dowitcher
 # Create the data and library dirs here so they can be owned by the nonroot
 # runtime user; a mounted named volume inherits this ownership. distroless has no
 # shell, so there is no chance to mkdir at runtime.
