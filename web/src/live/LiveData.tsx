@@ -1,5 +1,6 @@
 import { createContext, use, useEffect, useState, type ReactNode } from "react";
 import { wsClient } from "../api/ws";
+import { useAuth } from "../auth/AuthProvider";
 import type { ImportJob, LibraryStatus, WSMessage } from "../api/generated";
 
 /** Push-stream connection state, surfaced so the header can show a live light. */
@@ -18,6 +19,7 @@ interface LiveDataValue {
 const LiveDataContext = createContext<LiveDataValue | null>(null);
 
 export function LiveDataProvider({ children }: { children: ReactNode }) {
+  const userID = useAuth().user?.id ?? null;
   const [library, setLibrary] = useState<LibraryStatus | null>(null);
   const [jobs, setJobs] = useState<ImportJob[]>([]);
   const [paused, setPaused] = useState(false);
@@ -62,13 +64,25 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       wsClient.subscribe("queue", onQueue),
       wsClient.onStatus(setConnection),
     ];
-    wsClient.connect();
 
     return () => {
       for (const off of unsubs) off();
-      wsClient.close();
     };
   }, []);
+
+  // The socket follows the session rather than the mount, because /ws answers
+  // 401 without one: dialling on the login page would only buy a retry loop,
+  // and a sign-out has to drop the stream rather than leave it feeding a page
+  // nobody is entitled to.
+  // Keyed on the id, not the object: the session query hands back a fresh
+  // object on every refetch, and redialling for that would undo the point.
+  useEffect(() => {
+    if (!userID) {
+      wsClient.close();
+      return;
+    }
+    wsClient.connect();
+  }, [userID]);
 
   const value: LiveDataValue = { library, jobs, paused, connection };
   return <LiveDataContext value={value}>{children}</LiveDataContext>;
