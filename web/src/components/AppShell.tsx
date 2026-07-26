@@ -15,7 +15,7 @@ import {
 import { css } from "styled-system/css";
 import { flex, hstack, vstack } from "styled-system/patterns";
 import { http } from "../api/http";
-import type { ComicCount } from "../api/generated";
+import type { AppVersion, ComicCount } from "../api/generated";
 import { useAuth } from "../auth/AuthProvider";
 import { LiveDataProvider, useLiveData } from "../live/LiveData";
 import { ConnectionLight, ConnectionNotice } from "./ConnectionLight";
@@ -173,6 +173,23 @@ function ScanStatus() {
   );
 }
 
+/** Which build this server is running. Absent if the build did not say. */
+function BuildVersion() {
+  // The version only changes when the server restarts, and a restart drops the
+  // WS, so nothing here needs to refetch on its own.
+  const { data } = useQuery({
+    queryKey: ["version"],
+    queryFn: () => http.get<AppVersion>("/api/version"),
+    staleTime: Infinity,
+  });
+
+  if (!data?.version) return null;
+
+  return (
+    <span className={css({ fontSize: "2xs", color: "textMuted", px: "1" })}>{data.version}</span>
+  );
+}
+
 function UserStrip({
   compact = false,
 }: {
@@ -298,7 +315,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           <div className={vstack({ gap: "3", alignItems: "stretch", mt: "auto" })}>
             <ConnectionNotice />
-            <ScanStatus />
+            <div className={vstack({ gap: "0.5", alignItems: "stretch" })}>
+              <ScanStatus />
+              <BuildVersion />
+            </div>
             <div className={css({ h: "1px", bg: "border" })} />
             <UserStrip />
           </div>

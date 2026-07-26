@@ -43,7 +43,8 @@ type Config struct {
 	// token-authenticated door into the library, so an operator opts in rather
 	// than having it exposed the moment they upgrade.
 	MCPEnabled bool
-	// Version is the build version reported to MCP clients.
+	// Version is the build version reported to MCP clients and served at
+	// GET /api/version. Empty means the build did not say, and the UI hides it.
 	Version string
 }
 
@@ -95,6 +96,10 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Which build is running. Gated like everything else under /api: a version
+	// string tells an unauthenticated visitor which bugs this instance has.
+	s.mux.HandleFunc("GET /api/version", s.requireAuth(s.handleVersion))
+
 	// Auth (public).
 	s.mux.HandleFunc("POST /auth/register/begin", s.handleRegisterBegin)
 	s.mux.HandleFunc("POST /auth/register/finish", s.handleRegisterFinish)
@@ -144,6 +149,10 @@ func (s *Server) routes() {
 	// SPA + static assets fallback. Registered last: "/" matches everything the
 	// patterns above did not, so anything added after it would be dead.
 	s.mux.HandleFunc("/", s.serveSPA)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.AppVersion{Version: s.cfg.Version})
 }
 
 // noCache is the caching rule for the files that decide which version of the app

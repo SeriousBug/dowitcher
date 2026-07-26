@@ -396,6 +396,13 @@ export interface ComicCount {
   count: number /* int */;
 }
 /**
+ * AppVersion is the build the server is running: a release tag ("v1.2.3") or a
+ * dated development build ("dev-2026-07-26").
+ */
+export interface AppVersion {
+  version: string;
+}
+/**
  * WSType discriminates a WSMessage. The client switches on it.
  */
 export type WSType = string;

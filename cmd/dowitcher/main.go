@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -122,7 +123,7 @@ func main() {
 		Secure:     strings.HasPrefix(origin, "https://"),
 		DevAuth:    devAuth,
 		MCPEnabled: mcpEnabled,
-		Version:    version,
+		Version:    buildVersion(),
 
 		LibraryRoot:   libraryRoot,
 		UploadsDir:    uploadsDir,
@@ -257,6 +258,32 @@ func envBool(key string) bool {
 	return false
 }
 
-// version is the build version reported to MCP clients. Overridable at build
-// time with -ldflags "-X main.version=...".
+// version is the build version reported to MCP clients and shown in the UI.
+// Overridable at build time with -ldflags "-X main.version=...", which is how
+// release images carry their tag. Read through buildVersion, not directly.
 var version = "dev"
+
+// buildVersion dates an unstamped build so two "dev" builds are still tellable
+// apart. The commit time is the closest thing to a build date available from
+// inside the binary, and a build from a tarball (the Docker context excludes
+// .git) has neither, so it stays a bare "dev" until -ldflags names it.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	for _, s := range info.Settings {
+		if s.Key != "vcs.time" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, s.Value)
+		if err != nil {
+			return version
+		}
+		return "dev-" + t.UTC().Format(time.DateOnly)
+	}
+	return version
+}
