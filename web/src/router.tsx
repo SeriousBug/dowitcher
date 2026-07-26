@@ -3,6 +3,7 @@ import type { ComponentType } from "react";
 import { AppShell } from "./components/AppShell";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
+import { LiveDataProvider } from "./live/LiveData";
 import { OfflineSync } from "./offline/OfflineSync";
 import { CollectionDetailPage } from "./routes/CollectionDetail";
 import { CollectionsPage } from "./routes/Collections";
@@ -48,7 +49,13 @@ const rootRoute = createRootRoute({
       {/* Inside the provider: the progress queue replays against a session, and
           draining it while signed out would spend it on 401s. */}
       <OfflineSync />
-      <Outlet />
+      {/* Above the Outlet, so the push stream outlives a route change. Each page
+          builds its own AppShell, so a provider in there would be a new provider
+          per navigation — and a torn-down socket every time someone clicks a
+          nav item. */}
+      <LiveDataProvider>
+        <Outlet />
+      </LiveDataProvider>
     </AuthProvider>
   ),
 });

@@ -30,6 +30,7 @@ export class WSClient {
   private readonly url: string;
   private readonly maxBackoffMs: number;
   private socket: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 500;
   private closedByUser = false;
   private readonly all = new Set<Listener>();
@@ -43,12 +44,23 @@ export class WSClient {
     this.url = `${proto}//${location.host}${path}`;
   }
 
+  /**
+   * Idempotent: callers re-run it whenever the session changes, and a socket
+   * that is already up must survive that untouched. A queued retry is dropped
+   * in favour of dialling now, because whatever prompted the call (a sign-in,
+   * a tab waking up) is better evidence than a backoff timer that the server is
+   * worth trying again.
+   */
   connect(): void {
     this.closedByUser = false;
+    if (this.socket) return;
+    this.cancelReconnect();
+    this.backoffMs = 500;
     this.open();
   }
 
   private open(): void {
+    this.emitStatus("connecting");
     const socket = new WebSocket(this.url);
     this.socket = socket;
 
@@ -68,20 +80,29 @@ export class WSClient {
     };
 
     socket.onclose = () => {
+      // A close event can land after this socket was already replaced, since
+      // close() returns long before the handshake finishes. Reconnecting here
+      // would put a second socket alongside the live one and leave the field
+      // pointing at neither.
+      if (this.socket !== socket) return;
       this.socket = null;
-      if (this.closedByUser) {
-        this.emitStatus("closed");
-        return;
-      }
+
       // Once the backoff has climbed to its ceiling the retries have plainly
       // failed: report "closed". Before then we are still actively reconnecting.
       this.emitStatus(this.backoffMs >= this.maxBackoffMs ? "closed" : "connecting");
       const wait = this.backoffMs;
       this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
-      setTimeout(() => {
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
         if (!this.closedByUser) this.open();
       }, wait);
     };
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer === null) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   /**
@@ -125,8 +146,13 @@ export class WSClient {
 
   close(): void {
     this.closedByUser = true;
-    this.socket?.close();
+    this.cancelReconnect();
+    const socket = this.socket;
+    // Cleared first so the eventual onclose sees a socket that is no longer
+    // ours and stays out of it; the status is reported here instead.
     this.socket = null;
+    socket?.close();
+    this.emitStatus("closed");
   }
 }
 
