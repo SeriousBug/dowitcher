@@ -336,6 +336,12 @@ type ComicCount struct {
 	Count int `json:"count"`
 }
 
+// AppVersion is the build the server is running: a release tag ("v1.2.3") or a
+// dated development build ("dev-2026-07-26").
+type AppVersion struct {
+	Version string `json:"version"`
+}
+
 // WSType discriminates a WSMessage. The client switches on it.
 type WSType string
 
