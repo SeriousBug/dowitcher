@@ -3,7 +3,7 @@ module github.com/SeriousBug/dowitcher
 go 1.26.4
 
 require (
-	github.com/SeriousBug/webp-go-pure v0.0.0-20260725031933-7e5e084e1fd6
+	github.com/SeriousBug/webp-go-pure v1.0.0
 	github.com/bodgit/sevenzip v1.6.5
 	github.com/coder/websocket v1.8.15
 	github.com/descope/virtualwebauthn v1.0.5
