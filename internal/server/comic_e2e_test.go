@@ -479,6 +479,46 @@ func TestListFiltersAndPagination(t *testing.T) {
 	}
 }
 
+// TestComicCountSpansTheWholeLibrary: the sidebar's count is what the user can
+// open, not what the scanner walked, so an uploaded comic has to show up in it
+// even though it lives nowhere near the watched folder.
+func TestComicCountSpansTheWholeLibrary(t *testing.T) {
+	_, ts, st, cfg := libraryServer(t, nil)
+	alice := adminClient(t, ts, st)
+	bob := enrolledUser(t, ts, alice, "Bob")
+
+	addComic(t, st, cfg.LibraryRoot, "Shelved.cbz", 1, store.ComicRow{})
+
+	count := func(client *http.Client) int {
+		t.Helper()
+		resp, body := getReq(t, client, ts.URL+"/api/comics/count")
+		if resp.StatusCode != 200 {
+			t.Fatalf("comic count: %d %s", resp.StatusCode, body)
+		}
+		var c api.ComicCount
+		if err := json.Unmarshal(body, &c); err != nil {
+			t.Fatalf("decode count: %v", err)
+		}
+		return c.Count
+	}
+
+	if n := count(bob); n != 1 {
+		t.Fatalf("count with one library comic = %d, want 1", n)
+	}
+
+	// An upload is Bob's alone, so it moves his count and not Alice's.
+	addComic(t, st, cfg.LibraryRoot, "Bobs.cbz", 1, store.ComicRow{
+		OwnerID: userID(t, st, "Bob"),
+		Source:  store.SourceUpload,
+	})
+	if n := count(bob); n != 2 {
+		t.Fatalf("Bob's count after his upload = %d, want 2", n)
+	}
+	if n := count(alice); n != 1 {
+		t.Fatalf("Alice's count = %d, want 1 — Bob's upload is not hers to see", n)
+	}
+}
+
 // TestLibraryRoutesWithoutALibrary: a server with no scanner attached reports an
 // idle library rather than panicking, and refuses to pretend it scanned.
 func TestLibraryRoutesWithoutALibrary(t *testing.T) {

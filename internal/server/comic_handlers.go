@@ -656,16 +656,21 @@ func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLibraryStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+// handleComicCount answers how many comics the caller can open. That is a
+// different number from LibraryStatus.ComicCount, which counts files under the
+// watched folder and so misses uploads, imports and shared collections.
+func (s *Server) handleComicCount(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
-	st := s.libraryStatus()
-	// The scanner counts the files it walked; the card shows what this user can
-	// actually open, which for anyone but an admin is a different number.
-	if n, err := s.store.CountVisibleComics(u.ID); err == nil {
-		st.ComicCount = n
-	} else {
+	n, err := s.store.CountVisibleComics(u.ID)
+	if err != nil {
 		log.Printf("count comics: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, api.ComicCount{Count: n})
 }
 
 // handleLibraryScan kicks off a full rescan and answers immediately: a scan of a
