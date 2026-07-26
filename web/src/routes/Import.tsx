@@ -250,7 +250,7 @@ export function ImportPage() {
       <PageHeader
         eyebrow="Intake"
         title="Import"
-        subtitle="Point Dowitcher at a folder of images. It drops the duplicates, puts the pages in order, and packs a CBZ. Already have one? Upload it as it is."
+        subtitle="Add your comics to Dowitcher."
       />
 
       <section

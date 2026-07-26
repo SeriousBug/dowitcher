@@ -26,7 +26,7 @@ export function TagsPage() {
       <PageHeader
         eyebrow="Index"
         title="Tags"
-        subtitle="Your tags are yours alone. Nobody else on this server sees them, and you don't see theirs."
+        subtitle="Label your comics however you like and find them again later."
       />
 
       {tagsQuery.isLoading ? (

@@ -317,7 +317,10 @@ type DupeGroup struct {
 	Reason  string   `json:"reason"`
 }
 
-// LibraryStatus is what the scanner is currently doing.
+// LibraryStatus is what the scanner is currently doing. Every field describes
+// the watched folder and is identical for every user, which is what lets it ride
+// the hub's replay cache — see cacheable. A per-user number does not belong
+// here; ComicCount is the folder's count, not anyone's shelf.
 type LibraryStatus struct {
 	Scanning   bool   `json:"scanning"`
 	Done       int    `json:"done"`
@@ -325,6 +328,12 @@ type LibraryStatus struct {
 	LastScan   int64  `json:"lastScan,omitempty"`
 	ComicCount int    `json:"comicCount"`
 	Root       string `json:"root"`
+}
+
+// ComicCount is how many comics the requesting user can open, across the whole
+// library and not just the watched folder.
+type ComicCount struct {
+	Count int `json:"count"`
 }
 
 // WSType discriminates a WSMessage. The client switches on it.

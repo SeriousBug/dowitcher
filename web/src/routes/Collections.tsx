@@ -62,8 +62,8 @@ export function CollectionsPage({ kind = "collection" }: { kind?: CollectionKind
         title={cfg.plural}
         subtitle={
           kind === "readinglist"
-            ? "Line comics up in the order you mean to read them. Yours stay private until you share them."
-            : "Group comics however you like. Yours stay private until you share them."
+            ? "Line comics up in the order you mean to read them."
+            : "Group comics however you like."
         }
         actions={
           <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreating(true)}>
