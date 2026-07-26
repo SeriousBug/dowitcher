@@ -121,6 +121,13 @@ export interface Comic {
    * owner of a comic the caller does not own.
    */
   ownedByMe: boolean;
+  /**
+   * Hidden is the soft delete: an admin has taken this comic off every shelf
+   * without touching its file, tags or reading positions. Only the admin
+   * hidden listing ever returns a comic with this set, so everywhere else it
+   * is false — it is here so that listing can offer an unhide.
+   */
+  hidden: boolean;
 }
 /**
  * Page is one image inside a CBZ. Name is the zip entry name.
@@ -160,6 +167,14 @@ export interface ComicList {
   total: number /* int */;
   offset: number /* int */;
   limit: number /* int */;
+}
+/**
+ * HiddenComicsResponse is the admin listing of soft-deleted comics. It is not
+ * paginated: hidden comics are the handful someone deliberately took off the
+ * shelf, not a library-sized list, and the page exists to undo them.
+ */
+export interface HiddenComicsResponse {
+  comics: Comic[];
 }
 /**
  * Progress is one user's position in one comic. Page is 0-based.
@@ -412,13 +427,17 @@ export type WSType = string;
  */
 export const WSTypeLibrary: WSType = "library";
 /**
- * WSTypeComics is declared but NOTHING PRODUCES IT. Whoever writes that
- * producer, read this first: a comic list is filtered by visibility, so it
- * is per-user by definition. It must go out through Hub.BroadcastTo and
- * never Hub.Broadcast, or one user's library is fanned out to every
- * connected client. It must also never enter the hub's replay cache, which
- * is keyed by message type alone and would hand that payload to whoever
- * connects next. server.cacheable is what enforces the second half.
+ * WSTypeComics means "your shelf changed, refetch it". The only producer is
+ * hide/unhide, and it deliberately sends the message with Comics nil: an
+ * empty message is the same for every user, so it can go out through
+ * Hub.Broadcast.
+ * Anyone tempted to start filling in Comics, read this first. A comic list is
+ * filtered by visibility, so a populated one is per-user by definition. It
+ * would have to go out through Hub.BroadcastTo and never Hub.Broadcast, or
+ * one user's library is fanned out to every connected client. It must also
+ * never enter the hub's replay cache, which is keyed by message type alone
+ * and would hand that payload to whoever connects next. server.cacheable is
+ * what enforces the second half, and it excludes this type today.
  */
 export const WSTypeComics: WSType = "comics";
 /**

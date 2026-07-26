@@ -415,6 +415,122 @@ func TestDeleteComic(t *testing.T) {
 	}
 }
 
+// TestHideComic: hiding takes a comic off every shelf without touching the row
+// or the file, the hidden listing is the way back, and unhide restores it.
+func TestHideComic(t *testing.T) {
+	_, ts, st, cfg := libraryServer(t, nil)
+	alice := adminClient(t, ts, st)
+	aliceID := userID(t, st, "Alice")
+
+	lib, _ := addComic(t, st, cfg.LibraryRoot, "Dupe.cbz", 2, store.ComicRow{})
+	if resp, body := doReq(t, alice, "POST", ts.URL+"/api/comics/"+lib.ID+"/hide"); resp.StatusCode != 200 {
+		t.Fatalf("hide: %d %s", resp.StatusCode, body)
+	}
+
+	// Gone from the listing, from a direct fetch, and from the count.
+	if _, err := st.GetComic(aliceID, lib.ID); err == nil {
+		t.Error("a hidden comic should not be visible")
+	}
+	resp, body := getReq(t, alice, ts.URL+"/api/comics")
+	if resp.StatusCode != 200 || bytes.Contains(body, []byte(lib.ID)) {
+		t.Errorf("a hidden comic should not be in the listing: %s", body)
+	}
+
+	// The file and the row are both still there — that is the point of a hide.
+	if _, err := os.Stat(filepath.Join(cfg.LibraryRoot, lib.Path)); err != nil {
+		t.Errorf("hiding must not touch the file: %v", err)
+	}
+	if _, err := st.ComicRowByID(lib.ID); err != nil {
+		t.Errorf("hiding must keep the row: %v", err)
+	}
+
+	// The admin listing is the only place it turns up.
+	resp, body = getReq(t, alice, ts.URL+"/api/comics/hidden")
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte(lib.ID)) {
+		t.Fatalf("hidden listing should carry it: %d %s", resp.StatusCode, body)
+	}
+
+	if resp, body := doReq(t, alice, "POST", ts.URL+"/api/comics/"+lib.ID+"/unhide"); resp.StatusCode != 200 {
+		t.Fatalf("unhide: %d %s", resp.StatusCode, body)
+	}
+	if _, err := st.GetComic(aliceID, lib.ID); err != nil {
+		t.Errorf("an unhidden comic should be back: %v", err)
+	}
+}
+
+// TestHideIsAdminOnly: a hide takes a comic off everyone's shelf, so a
+// non-admin may neither do it nor see the list of what has been done.
+func TestHideIsAdminOnly(t *testing.T) {
+	_, ts, st, cfg := libraryServer(t, nil)
+	alice := adminClient(t, ts, st)
+	bob := enrolledUser(t, ts, alice, "Bob")
+	bobID := userID(t, st, "Bob")
+
+	lib, _ := addComic(t, st, cfg.LibraryRoot, "Shared.cbz", 2, store.ComicRow{})
+	if resp, _ := doReq(t, bob, "POST", ts.URL+"/api/comics/"+lib.ID+"/hide"); resp.StatusCode != 403 {
+		t.Errorf("hide should be admin-only: got %d, want 403", resp.StatusCode)
+	}
+	if resp, _ := getReq(t, bob, ts.URL+"/api/comics/hidden"); resp.StatusCode != 403 {
+		t.Errorf("the hidden listing should be admin-only: got %d, want 403", resp.StatusCode)
+	}
+	if _, err := st.GetComic(bobID, lib.ID); err != nil {
+		t.Errorf("a refused hide must change nothing: %v", err)
+	}
+
+	// An admin hide reaches bob too: the flag is server-wide, not per-user.
+	if resp, body := doReq(t, alice, "POST", ts.URL+"/api/comics/"+lib.ID+"/hide"); resp.StatusCode != 200 {
+		t.Fatalf("hide: %d %s", resp.StatusCode, body)
+	}
+	if _, err := st.GetComic(bobID, lib.ID); err == nil {
+		t.Error("an admin hide should remove the comic from every user's shelf")
+	}
+}
+
+// TestHiddenComicKeepsTagsAndProgress: the reason to hide rather than delete is
+// that nothing attached to the comic is lost, so an unhide is a real undo.
+func TestHiddenComicKeepsTagsAndProgress(t *testing.T) {
+	_, ts, st, cfg := libraryServer(t, nil)
+	alice := adminClient(t, ts, st)
+	aliceID := userID(t, st, "Alice")
+
+	lib, _ := addComic(t, st, cfg.LibraryRoot, "Tagged.cbz", 5, store.ComicRow{})
+	if resp, body := sendJSON(t, alice, "PUT", ts.URL+"/api/comics/"+lib.ID+"/tags",
+		[]byte(`{"tags":["keep"]}`)); resp.StatusCode != 200 {
+		t.Fatalf("set tags: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := sendJSON(t, alice, "PUT", ts.URL+"/api/comics/"+lib.ID+"/progress",
+		[]byte(`{"page":3}`)); resp.StatusCode != 200 {
+		t.Fatalf("set progress: %d %s", resp.StatusCode, body)
+	}
+
+	for _, action := range []string{"hide", "unhide"} {
+		if resp, body := doReq(t, alice, "POST", ts.URL+"/api/comics/"+lib.ID+"/"+action); resp.StatusCode != 200 {
+			t.Fatalf("%s: %d %s", action, resp.StatusCode, body)
+		}
+	}
+
+	c, err := st.GetComic(aliceID, lib.ID)
+	if err != nil {
+		t.Fatalf("get after round trip: %v", err)
+	}
+	if len(c.Tags) != 1 || c.Tags[0] != "keep" {
+		t.Errorf("tags should survive a hide/unhide, got %v", c.Tags)
+	}
+	prog, err := st.ListProgress(aliceID)
+	if err != nil {
+		t.Fatalf("list progress: %v", err)
+	}
+	var page int
+	for _, p := range prog {
+		if p.ComicID == lib.ID {
+			page = p.Page
+		}
+	}
+	if page != 3 {
+		t.Errorf("reading position should survive a hide/unhide, got page %d", page)
+	}
+}
+
 // TestListFiltersAndPagination pins the query parameters the library grid drives.
 func TestListFiltersAndPagination(t *testing.T) {
 	_, ts, st, cfg := libraryServer(t, nil)

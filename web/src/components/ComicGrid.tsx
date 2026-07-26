@@ -115,20 +115,26 @@ export function ComicTile({
 const MISSING = css({ opacity: 0.42, filter: "saturate(0.35)" });
 
 /** Square icon button for the overlay above a cover. */
+// disabled carries the reason rather than a boolean: a greyed-out button with no
+// explanation is worse than no button, and the reason is the only thing the
+// hover state has room to say.
 export function TileButton({
   onClick,
   label,
+  disabled,
   children,
 }: {
   onClick: () => void;
   label: string;
+  disabled?: string;
   children: ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled !== undefined}
       aria-label={label}
-      title={label}
+      title={disabled ?? label}
       className={css({
         display: "flex",
         alignItems: "center",
@@ -141,6 +147,11 @@ export function TileButton({
         cursor: "pointer",
         backdropFilter: "blur(4px)",
         _hover: { bg: "accent", color: "white" },
+        _disabled: {
+          color: "ink.500",
+          cursor: "not-allowed",
+          _hover: { bg: "rgba(10, 8, 9, 0.82)", color: "ink.500" },
+        },
       })}
     >
       {children}

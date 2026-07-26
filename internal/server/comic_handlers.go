@@ -555,31 +555,15 @@ func (s *Server) handleDeleteComic(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	switch row.Source {
-	case store.SourceUpload:
-		// Visibility got them this far; a shared collection is not a licence to
-		// delete somebody's upload.
-		if row.OwnerID != u.ID && !u.IsAdmin {
-			writeErr(w, http.StatusForbidden, "only the uploader can delete an upload")
-			return
+	if err := store.CanDeleteComic(row, u.ID, u.IsAdmin); err != nil {
+		// The refusals are the caller's to act on, so the rule's own text is what
+		// they see. Only the "managed elsewhere" one is a wrong-resource problem
+		// rather than a permission one.
+		status := http.StatusForbidden
+		if errors.Is(err, store.ErrDeleteManaged) {
+			status = http.StatusBadRequest
 		}
-	case store.SourceLibraryPDF, store.SourceLibraryArchive:
-		// A converted library comic (from a dropped PDF or archive) is server-wide
-		// and its CBZ is server-managed in the data dir, so deleting it is a real,
-		// deletable action — unlike a library comic. It belongs to no one, so only
-		// an admin may remove it. The source file is left untouched on its read-only
-		// mount; the content-hash dedupe is what keeps a later restart from
-		// re-importing it.
-		if !u.IsAdmin {
-			writeErr(w, http.StatusForbidden, "only an admin can delete a server-wide comic")
-			return
-		}
-	default:
-		// The library folder is the source of truth for what is in it. Dropping
-		// the row would delete the tags and reading progress and then resurrect
-		// the comic, stripped, on the next scan. Removing a library comic means
-		// removing its file.
-		writeErr(w, http.StatusBadRequest, "library comics are managed from the library folder, not here")
+		writeErr(w, status, err.Error())
 		return
 	}
 	if err := s.store.DeleteComic(comic.ID); err != nil {
@@ -642,6 +626,73 @@ func (s *Server) handleUnclaimComic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w)
+}
+
+// handleHideComic soft-deletes a comic: it drops out of every listing, search
+// and collection for everybody, while its row, its file, its tags and everyone's
+// reading position stay exactly where they are.
+//
+// This is what a library comic gets instead of a delete. Its file is under the
+// read-only library root, so removing the row would both destroy the tags and
+// progress and let the next scan insert the comic again as a fresh, stripped
+// duplicate. Hiding keeps the row, which is what makes it survivable and what
+// makes it reversible.
+func (s *Server) handleHideComic(w http.ResponseWriter, r *http.Request) {
+	comic, ok := s.visibleComic(w, r)
+	if !ok {
+		return
+	}
+	s.setHidden(w, comic.ID, true)
+}
+
+// handleUnhideComic puts a hidden comic back. It looks the comic up through the
+// hidden-inclusive rule, since the ordinary one can no longer see it.
+func (s *Server) handleUnhideComic(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	id := r.PathValue("id")
+	if _, err := s.store.GetComicWithHidden(u.ID, id); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("get hidden comic %s: %v", id, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	s.setHidden(w, id, false)
+}
+
+func (s *Server) setHidden(w http.ResponseWriter, id string, hidden bool) {
+	if err := s.store.SetComicHidden(id, hidden); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "comic not found")
+			return
+		}
+		log.Printf("set comic %s hidden=%v: %v", id, hidden, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	// Every shelf on every device just changed, and nothing else would tell them.
+	// Comics stays nil on purpose: an empty signal is identical for every user,
+	// so it is the one shape of this message that may be broadcast to everyone.
+	s.hub.Broadcast(api.WSMessage{Type: api.WSTypeComics})
+	writeOK(w)
+}
+
+// handleListHiddenComics is the only listing that returns hidden comics, so it
+// is the only way back from a hide.
+func (s *Server) handleListHiddenComics(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	comics, err := s.store.ListHiddenComics(u.ID)
+	if err != nil {
+		log.Printf("list hidden comics: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if comics == nil {
+		comics = []api.Comic{}
+	}
+	writeJSON(w, http.StatusOK, api.HiddenComicsResponse{Comics: comics})
 }
 
 func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
@@ -732,11 +783,7 @@ func (s *Server) comicRow(w http.ResponseWriter, id string) (store.ComicRow, boo
 // root; an upload and a converted library file (PDF or archive) both live in the
 // writable uploads dir, so only those resolve anywhere other than the library root.
 func (s *Server) comicFile(row store.ComicRow) string {
-	switch row.Source {
-	case store.SourceUpload, store.SourceLibraryPDF, store.SourceLibraryArchive:
-		return filepath.Join(s.cfg.UploadsDir, row.Path)
-	}
-	return filepath.Join(s.cfg.LibraryRoot, row.Path)
+	return filepath.Join(store.ComicFileDir(row, s.cfg.UploadsDir, s.cfg.LibraryRoot), row.Path)
 }
 
 // etagFor identifies immutable bytes derived from one comic: its content hash

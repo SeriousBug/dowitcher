@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
@@ -438,6 +441,90 @@ func (s *Server) claimComic(ctx context.Context, _ *mcp.CallToolRequest, in Comi
 		return nil, ComicOutput{}, dbErr(err)
 	}
 	return nil, ComicOutput{Comic: viewComic(c)}, nil
+}
+
+// --- hide_comic / unhide_comic / list_hidden_comics (admin) ---
+
+func (s *Server) hideComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	// The HTTP route gets this gate from requireAdmin; here it has to be explicit.
+	if !u.IsAdmin {
+		return nil, okOutput{}, errors.New("hiding a comic is an admin action")
+	}
+	if _, err := s.store.GetComic(u.ID, in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	if err := s.store.SetComicHidden(in.ComicID, true); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	return nil, okOutput{OK: true}, nil
+}
+
+func (s *Server) unhideComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	if !u.IsAdmin {
+		return nil, okOutput{}, errors.New("unhiding a comic is an admin action")
+	}
+	// The hidden-inclusive lookup, since the ordinary one can no longer see it.
+	if _, err := s.store.GetComicWithHidden(u.ID, in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	if err := s.store.SetComicHidden(in.ComicID, false); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	return nil, okOutput{OK: true}, nil
+}
+
+func (s *Server) listHiddenComics(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, ListComicsOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, ListComicsOutput{}, errNoUser
+	}
+	if !u.IsAdmin {
+		return nil, ListComicsOutput{}, errors.New("listing hidden comics is an admin action")
+	}
+	comics, err := s.store.ListHiddenComics(u.ID)
+	if err != nil {
+		return nil, ListComicsOutput{}, dbErr(err)
+	}
+	return nil, ListComicsOutput{Comics: viewComics(comics), Total: len(comics)}, nil
+}
+
+// --- delete_comic ---
+
+func (s *Server) deleteComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, okOutput{}, errNoUser
+	}
+	// Visibility first, so a comic the caller cannot see reads as missing rather
+	// than as one they lack permission to delete.
+	if _, err := s.store.GetComic(u.ID, in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	row, err := s.store.ComicRowByID(in.ComicID)
+	if err != nil {
+		return nil, okOutput{}, dbErr(err)
+	}
+	if err := store.CanDeleteComic(row, u.ID, u.IsAdmin); err != nil {
+		return nil, okOutput{}, err
+	}
+	if err := s.store.DeleteComic(in.ComicID); err != nil {
+		return nil, okOutput{}, notFoundOr(err, "comic")
+	}
+	// Same order as the HTTP handler: a leftover file is dead weight, whereas a
+	// row whose file is gone is a comic that opens to an error. CanDeleteComic
+	// has already ruled out every source that lives under the library root.
+	if err := os.Remove(filepath.Join(s.uploadsDir, row.Path)); err != nil && !os.IsNotExist(err) {
+		log.Printf("mcp delete comic file %s: %v", row.Path, err)
+	}
+	return nil, okOutput{OK: true}, nil
 }
 
 type okOutput struct {
