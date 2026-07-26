@@ -32,13 +32,19 @@ type Server struct {
 	// metadata URL a 401 points a client at, which is what kicks off OAuth
 	// discovery.
 	origin string
+	// uploadsDir is where dowitcher's own CBZs live. delete_comic is the only
+	// tool that touches the filesystem, and the only comics it can delete are the
+	// ones stored here, so the library root is deliberately not reachable from
+	// this package.
+	uploadsDir string
 }
 
 // New returns an MCP server backed by st. version rides along in the server's
 // advertised implementation info; origin is the instance's public base URL,
-// used to advertise where the OAuth flow starts.
-func New(st *store.Store, version, origin string) *Server {
-	return &Server{store: st, version: version, origin: origin}
+// used to advertise where the OAuth flow starts; uploadsDir is the data dir
+// holding the CBZs delete_comic may remove.
+func New(st *store.Store, version, origin, uploadsDir string) *Server {
+	return &Server{store: st, version: version, origin: origin, uploadsDir: uploadsDir}
 }
 
 // Handler is the http.Handler to mount (at /mcp). It wraps the streamable-HTTP
@@ -173,6 +179,26 @@ func (s *Server) build() *mcp.Server {
 		Name:        "claim_comic",
 		Description: "Admin only. Claim a library comic: it leaves every other user's view and becomes yours, without moving the file. Only comics that came from the watched library folder can be claimed.",
 	}, s.claimComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "hide_comic",
+		Description: "Admin only. Soft-delete a comic: it drops out of every listing, search and collection for every user, while its file, its tags and everyone's reading position are left untouched. This is what to use on a comic delete_comic refuses, such as a duplicate sitting in the read-only library folder. Reversible with unhide_comic.",
+	}, s.hideComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "unhide_comic",
+		Description: "Admin only. Put a hidden comic back on the shelf, with its tags and reading positions intact.",
+	}, s.unhideComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_hidden_comics",
+		Description: "Admin only. List the comics that have been hidden. This is the only listing that returns them, so it is the only way to find one in order to unhide it.",
+	}, s.listHiddenComics)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_comic",
+		Description: "Permanently delete a comic and its CBZ file, along with everyone's tags and reading position on it. Only your own uploads can be deleted (an admin can delete any upload), plus, for admins, comics converted from a PDF or archive dropped in the library folder. Comics the library scanner manages cannot be deleted here — remove those from the library folder instead. This cannot be undone, so confirm with the user before calling it.",
+	}, s.deleteComic)
 
 	return srv
 }
