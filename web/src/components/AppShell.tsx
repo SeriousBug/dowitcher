@@ -17,7 +17,7 @@ import { flex, hstack, vstack } from "styled-system/patterns";
 import { http } from "../api/http";
 import type { AppVersion, ComicCount } from "../api/generated";
 import { useAuth } from "../auth/AuthProvider";
-import { LiveDataProvider, useLiveData } from "../live/LiveData";
+import { useLiveData } from "../live/LiveData";
 import { ConnectionLight, ConnectionNotice } from "./ConnectionLight";
 import { ToasterView } from "./ToasterView";
 
@@ -282,129 +282,127 @@ function UserStrip({
  */
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <LiveDataProvider>
-      <div className={css({ minH: "100vh", bg: "bg" })}>
-        <aside
-          className={vstack({
-            display: { base: "none", md: "flex" },
-            position: "fixed",
-            left: "0",
-            top: "0",
-            bottom: "0",
-            w: SIDEBAR_W,
-            gap: "6",
-            alignItems: "stretch",
-            px: "4",
-            py: "5",
-            borderRightWidth: "1px",
-            borderColor: "border",
-            bg: "bg",
-            zIndex: "20",
-          })}
-        >
-          <div className={hstack({ justify: "space-between", gap: "2", px: "1" })}>
-            <Wordmark />
-            <ConnectionLight />
-          </div>
-
-          <nav aria-label="Main" className={vstack({ gap: "1", alignItems: "stretch" })}>
-            {NAV.map((item) => (
-              <NavItem key={item.to} {...item} />
-            ))}
-          </nav>
-
-          <div className={vstack({ gap: "3", alignItems: "stretch", mt: "auto" })}>
-            <ConnectionNotice />
-            <div className={vstack({ gap: "0.5", alignItems: "stretch" })}>
-              <ScanStatus />
-              <BuildVersion />
-            </div>
-            <div className={css({ h: "1px", bg: "border" })} />
-            <UserStrip />
-          </div>
-        </aside>
-
-        <header
-          className={hstack({
-            display: { base: "flex", md: "none" },
-            justify: "space-between",
-            position: "sticky",
-            top: "0",
-            zIndex: "20",
-            px: "4",
-            h: "14",
-            bg: "bg",
-            borderBottomWidth: "1px",
-            borderColor: "border",
-          })}
-        >
+    <div className={css({ minH: "100vh", bg: "bg" })}>
+      <aside
+        className={vstack({
+          display: { base: "none", md: "flex" },
+          position: "fixed",
+          left: "0",
+          top: "0",
+          bottom: "0",
+          w: SIDEBAR_W,
+          gap: "6",
+          alignItems: "stretch",
+          px: "4",
+          py: "5",
+          borderRightWidth: "1px",
+          borderColor: "border",
+          bg: "bg",
+          zIndex: "20",
+        })}
+      >
+        <div className={hstack({ justify: "space-between", gap: "2", px: "1" })}>
           <Wordmark />
-          <div className={hstack({ gap: "3" })}>
-            <ConnectionLight />
-            <UserStrip compact />
-          </div>
-        </header>
+          <ConnectionLight />
+        </div>
 
-        <main
-          className={css({
-            ml: { base: "0", md: SIDEBAR_W },
-            px: { base: "4", md: "8" },
-            py: { base: "6", md: "9" },
-            // Room for the mobile tab bar to float over without covering the
-            // last row of covers.
-            pb: { base: "24", md: "9" },
-            maxW: "7xl",
-          })}
-        >
-          {children}
-        </main>
-
-        <nav
-          aria-label="Sections"
-          className={hstack({
-            display: { base: "flex", md: "none" },
-            justify: "space-around",
-            position: "fixed",
-            left: "0",
-            right: "0",
-            bottom: "0",
-            zIndex: "20",
-            py: "2",
-            // The first and last tabs otherwise sit under the rounded corners of
-            // an iOS home-screen install.
-            pl: "calc(token(spacing.3) + env(safe-area-inset-left))",
-            pr: "calc(token(spacing.3) + env(safe-area-inset-right))",
-            bg: "rgba(19, 16, 17, 0.92)",
-            backdropFilter: "blur(10px)",
-            borderTopWidth: "1px",
-            borderColor: "border",
-          })}
-        >
-          {NAV.map(({ to, label, icon: Icon }) => (
-            <Link
-              key={to}
-              to={to}
-              activeOptions={{ exact: to === "/" }}
-              aria-label={label}
-              className={vstack({
-                gap: "1",
-                flex: "1",
-                py: "1.5",
-                fontSize: "2xs",
-                fontWeight: "semibold",
-                color: "textMuted",
-                textDecoration: "none",
-                "&[data-status='active']": { color: "accent" },
-              })}
-            >
-              <Icon size={19} strokeWidth={2} />
-              {label}
-            </Link>
+        <nav aria-label="Main" className={vstack({ gap: "1", alignItems: "stretch" })}>
+          {NAV.map((item) => (
+            <NavItem key={item.to} {...item} />
           ))}
         </nav>
 
-        <ToasterView />
-      </div>
-    </LiveDataProvider>
+        <div className={vstack({ gap: "3", alignItems: "stretch", mt: "auto" })}>
+          <ConnectionNotice />
+          <div className={vstack({ gap: "0.5", alignItems: "stretch" })}>
+            <ScanStatus />
+            <BuildVersion />
+          </div>
+          <div className={css({ h: "1px", bg: "border" })} />
+          <UserStrip />
+        </div>
+      </aside>
+
+      <header
+        className={hstack({
+          display: { base: "flex", md: "none" },
+          justify: "space-between",
+          position: "sticky",
+          top: "0",
+          zIndex: "20",
+          px: "4",
+          h: "14",
+          bg: "bg",
+          borderBottomWidth: "1px",
+          borderColor: "border",
+        })}
+      >
+        <Wordmark />
+        <div className={hstack({ gap: "3" })}>
+          <ConnectionLight />
+          <UserStrip compact />
+        </div>
+      </header>
+
+      <main
+        className={css({
+          ml: { base: "0", md: SIDEBAR_W },
+          px: { base: "4", md: "8" },
+          py: { base: "6", md: "9" },
+          // Room for the mobile tab bar to float over without covering the
+          // last row of covers.
+          pb: { base: "24", md: "9" },
+          maxW: "7xl",
+        })}
+      >
+        {children}
+      </main>
+
+      <nav
+        aria-label="Sections"
+        className={hstack({
+          display: { base: "flex", md: "none" },
+          justify: "space-around",
+          position: "fixed",
+          left: "0",
+          right: "0",
+          bottom: "0",
+          zIndex: "20",
+          py: "2",
+          // The first and last tabs otherwise sit under the rounded corners of
+          // an iOS home-screen install.
+          pl: "calc(token(spacing.3) + env(safe-area-inset-left))",
+          pr: "calc(token(spacing.3) + env(safe-area-inset-right))",
+          bg: "rgba(19, 16, 17, 0.92)",
+          backdropFilter: "blur(10px)",
+          borderTopWidth: "1px",
+          borderColor: "border",
+        })}
+      >
+        {NAV.map(({ to, label, icon: Icon }) => (
+          <Link
+            key={to}
+            to={to}
+            activeOptions={{ exact: to === "/" }}
+            aria-label={label}
+            className={vstack({
+              gap: "1",
+              flex: "1",
+              py: "1.5",
+              fontSize: "2xs",
+              fontWeight: "semibold",
+              color: "textMuted",
+              textDecoration: "none",
+              "&[data-status='active']": { color: "accent" },
+            })}
+          >
+            <Icon size={19} strokeWidth={2} />
+            {label}
+          </Link>
+        ))}
+      </nav>
+
+      <ToasterView />
+    </div>
   );
 }
