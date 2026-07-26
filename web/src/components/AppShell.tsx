@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   DownloadCloud,
   FolderOpen,
@@ -13,6 +14,8 @@ import {
 } from "lucide-react";
 import { css } from "styled-system/css";
 import { flex, hstack, vstack } from "styled-system/patterns";
+import { http } from "../api/http";
+import type { ComicCount } from "../api/generated";
 import { useAuth } from "../auth/AuthProvider";
 import { LiveDataProvider, useLiveData } from "../live/LiveData";
 import { ConnectionLight, ConnectionNotice } from "./ConnectionLight";
@@ -112,9 +115,15 @@ function NavItem({
 /** Live scan readout. Only present while there is something to report. */
 function ScanStatus() {
   const { library } = useLiveData();
-  if (!library) return null;
+  // The scanner's own count only covers the watched folder, so it would leave
+  // out uploads, imports and anything shared with this user. lastScan is in the
+  // key so a finished scan pulls the new total without a separate subscription.
+  const countQuery = useQuery({
+    queryKey: ["comics", "count", library?.lastScan ?? 0],
+    queryFn: () => http.get<ComicCount>("/api/comics/count"),
+  });
 
-  if (library.scanning) {
+  if (library?.scanning) {
     const pct = library.total > 0 ? Math.round((library.done / library.total) * 100) : 0;
     return (
       <div
@@ -154,9 +163,12 @@ function ScanStatus() {
     );
   }
 
+  const count = countQuery.data?.count;
+  if (count === undefined) return null;
+
   return (
     <span className={css({ fontSize: "xs", color: "textMuted", px: "1" })}>
-      {library.comicCount === 1 ? "1 comic" : `${library.comicCount} comics`} on the shelf
+      {count === 1 ? "1 comic" : `${count} comics`} on the shelf
     </span>
   );
 }

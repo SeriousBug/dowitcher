@@ -375,7 +375,10 @@ export interface DupeGroup {
   reason: string;
 }
 /**
- * LibraryStatus is what the scanner is currently doing.
+ * LibraryStatus is what the scanner is currently doing. Every field describes
+ * the watched folder and is identical for every user, which is what lets it ride
+ * the hub's replay cache — see cacheable. A per-user number does not belong
+ * here; ComicCount is the folder's count, not anyone's shelf.
  */
 export interface LibraryStatus {
   scanning: boolean;
@@ -384,6 +387,13 @@ export interface LibraryStatus {
   lastScan?: number /* int64 */;
   comicCount: number /* int */;
   root: string;
+}
+/**
+ * ComicCount is how many comics the requesting user can open, across the whole
+ * library and not just the watched folder.
+ */
+export interface ComicCount {
+  count: number /* int */;
 }
 /**
  * WSType discriminates a WSMessage. The client switches on it.

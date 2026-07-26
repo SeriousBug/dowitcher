@@ -230,7 +230,7 @@ export function SettingsPage() {
             {library?.root ?? "…"}
           </code>
           <p className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.6" })}>
-            Dowitcher watches this folder and picks up CBZ files as they appear.{" "}
+            Dowitcher watches this folder and picks up comics as they appear.{" "}
             {library
               ? `${library.comicCount} found${library.lastScan ? `, last checked ${formatRelative(library.lastScan)}` : ""}.`
               : ""}
@@ -312,9 +312,8 @@ export function SettingsPage() {
             <p className={css({ color: "textMuted", fontSize: "sm" })}>Looking…</p>
           ) : invites.length === 0 ? (
             <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
-              No invites waiting. Create one and send the link to whoever you want
-              on this Dowitcher — they set up their own passkey, and the link works
-              once.
+              No invites waiting. Create an invite link to share with people you
+              want to join.
             </p>
           ) : (
             <div className={vstack({ gap: "2", alignItems: "stretch" })}>

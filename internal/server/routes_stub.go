@@ -141,6 +141,8 @@ func (s *Server) registerLibraryRoutes() {
 	// Uploading a ready-made CBZ creates a comic outright, so it is a POST to the
 	// collection rather than an import: there is no job behind it to look up.
 	s.mux.HandleFunc("POST /api/comics", s.requireAuth(s.handleUploadComic))
+	// The literal segment outranks {id} in the mux, so no comic id can shadow it.
+	s.mux.HandleFunc("GET /api/comics/count", s.requireAuth(s.handleComicCount))
 	s.mux.HandleFunc("GET /api/comics/{id}", s.requireAuth(s.handleGetComic))
 	// Renaming edits a field on the resource rather than running an action, so it
 	// is a PATCH on the comic, not a verb sub-path. The store enforces the
