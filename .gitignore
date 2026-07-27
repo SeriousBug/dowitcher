@@ -16,3 +16,5 @@ web/styled-system/
 # Agent worktrees are checkouts of this repo. Committing one would nest a git
 # repo inside the repo it came from.
 /.claude/worktrees/
+
+.DS_Store
