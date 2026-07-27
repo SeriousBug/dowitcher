@@ -9,6 +9,12 @@
 // visibility and sharing stay enforced in SQL where they already are. The one
 // rule this package adds on top is the admin gate on claim, which the HTTP layer
 // gets from requireAdmin and this layer has to apply itself.
+//
+// On the filesystem the rule is the same one the whole binary keeps: reads may
+// reach anywhere a comic's file lives, the library root included, but writes and
+// deletes may only ever touch the uploads dir. read_comic_pages therefore opens
+// library comics; delete_comic removes files only from uploadsDir, and
+// store.CanDeleteComic is what keeps a library-managed comic out of its reach.
 package mcp
 
 import (
@@ -19,6 +25,7 @@ import (
 
 	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/ocr"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,19 +39,32 @@ type Server struct {
 	// metadata URL a 401 points a client at, which is what kicks off OAuth
 	// discovery.
 	origin string
-	// uploadsDir is where dowitcher's own CBZs live. delete_comic is the only
-	// tool that touches the filesystem, and the only comics it can delete are the
-	// ones stored here, so the library root is deliberately not reachable from
-	// this package.
-	uploadsDir string
+	// uploadsDir and libraryRoot are the two roots a comic's stored path can be
+	// relative to, exactly as in server.Config. Both are readable; only uploadsDir
+	// is ever written to or deleted from.
+	uploadsDir  string
+	libraryRoot string
+	// ocr recognises text for read_comic_pages. It is built once at startup
+	// because that is where a bad DOWITCHER_TESSDATA has to be fatal, and it is
+	// cheap to hold: the engine reads the training data and nothing else until a
+	// call arrives, so no Tesseract module is compiled on a server that is never
+	// asked for text. Nil disables the text format rather than panicking.
+	ocr *ocr.Engine
 }
 
 // New returns an MCP server backed by st. version rides along in the server's
 // advertised implementation info; origin is the instance's public base URL,
-// used to advertise where the OAuth flow starts; uploadsDir is the data dir
-// holding the CBZs delete_comic may remove.
-func New(st *store.Store, version, origin, uploadsDir string) *Server {
-	return &Server{store: st, version: version, origin: origin, uploadsDir: uploadsDir}
+// used to advertise where the OAuth flow starts; uploadsDir and libraryRoot
+// resolve a comic row to a file; engine recognises page text, and may be nil.
+func New(st *store.Store, version, origin, uploadsDir, libraryRoot string, engine *ocr.Engine) *Server {
+	return &Server{
+		store:       st,
+		version:     version,
+		origin:      origin,
+		uploadsDir:  uploadsDir,
+		libraryRoot: libraryRoot,
+		ocr:         engine,
+	}
 }
 
 // Handler is the http.Handler to mount (at /mcp). It wraps the streamable-HTTP
@@ -109,6 +129,11 @@ func (s *Server) build() *mcp.Server {
 		Name:        "get_comic",
 		Description: "Get one comic by id, including your own tags on it.",
 	}, s.getComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "read_comic_pages",
+		Description: "Read the contents of selected pages of a comic. Page numbers are 1-based, matching the pageCount get_comic reports. Choose the pages with pages (a list of individual page numbers), with fromPage and toPage (an inclusive range, both required together), or with both, in which case you get the union. Set format='image' to get the pages themselves as pictures, at most 10 per call and scaled to 1600px wide; set format='text' to get the lettering read off them by OCR, at most 5 per call. There is no default format, and asking for more pages than the limit is refused rather than truncated, so read a long stretch in several calls. OCR is imperfect on stylised lettering and gives you no idea what is drawn, so use format='image' unless you only need the words.",
+	}, s.readComicPages)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "rename_comic",

@@ -13,6 +13,7 @@ import (
 
 	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/oauth"
+	"github.com/SeriousBug/dowitcher/internal/ocr"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -108,20 +109,26 @@ func setup(t *testing.T) e2e {
 	bob, _ := st.CreateUser(store.NewID(), "bob", false)
 
 	// A library comic (server-wide), plus one private upload each.
-	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "lib/Public.cbz", Title: "Public", Source: store.SourceLibrary, PageCount: 10}))
+	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "lib/Public.cbz", Title: "Public", Source: store.SourceLibrary, PageCount: 12}))
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/alice/a.cbz", Title: "AliceOnly", Source: store.SourceUpload, OwnerID: alice.ID, PageCount: 5}))
 	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/bob/b.cbz", Title: "BobOnly", Source: store.SourceUpload, OwnerID: bob.ID, PageCount: 7}))
+	must(t, st.UpsertComic(store.ComicRow{ID: store.NewID(), Path: "uploads/alice/lettered.cbz", Title: "Lettered", Source: store.SourceUpload, OwnerID: alice.ID, PageCount: len(letteredPages)}))
 
-	// The upload rows point at real files, so delete_comic can be checked for
-	// having removed the bytes and not only the row.
-	uploads := t.TempDir()
-	for _, rel := range []string{"uploads/alice/a.cbz", "uploads/bob/b.cbz"} {
-		p := filepath.Join(uploads, rel)
-		must(t, os.MkdirAll(filepath.Dir(p), 0o755))
-		must(t, os.WriteFile(p, []byte("PK"), 0o644))
+	// Every row points at a real CBZ: delete_comic is checked for having removed
+	// the bytes and not only the row, and read_comic_pages actually opens them.
+	// The library comic's file goes under the library root, which is the other
+	// half of the pair that turns a row into a path.
+	uploads, library := t.TempDir(), t.TempDir()
+	writeColourCBZ(t, filepath.Join(uploads, "uploads/alice/a.cbz"), 5)
+	writeColourCBZ(t, filepath.Join(uploads, "uploads/bob/b.cbz"), 7)
+	writeColourCBZ(t, filepath.Join(library, "lib/Public.cbz"), 12)
+	writeLetteredCBZ(t, filepath.Join(uploads, "uploads/alice/lettered.cbz"))
+
+	engine, err := ocr.New("")
+	if err != nil {
+		t.Fatalf("ocr engine: %v", err)
 	}
-
-	srv := httptest.NewServer(New(st, "test", "http://mcp.test", uploads).Handler())
+	srv := httptest.NewServer(New(st, "test", "http://mcp.test", uploads, library, engine).Handler())
 	t.Cleanup(srv.Close)
 	return e2e{store: st, url: srv.URL, uploadsDir: uploads, aliceID: alice.ID, bobID: bob.ID}
 }
