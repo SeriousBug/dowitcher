@@ -640,6 +640,39 @@ func (s *Store) DeleteUserOAuthTokens(userID string) (int64, error) {
 	return a + r, nil
 }
 
+// DownloadGrant is what a redeemed download token permits: one comic, on behalf
+// of the user who minted it.
+type DownloadGrant struct {
+	ComicID string
+	UserID  string
+}
+
+// CreateDownloadToken stores a hashed download token for one comic.
+func (s *Store) CreateDownloadToken(tokenHash, comicID, userID string, expiresAt int64) error {
+	_, err := s.db.Exec(`INSERT INTO comic_download_tokens(token_hash,comic_id,user_id,expires_at,created_at)
+		VALUES(?,?,?,?,?)`, tokenHash, comicID, userID, expiresAt, time.Now().Unix())
+	return err
+}
+
+// DownloadToken resolves a download token hash to what it grants, with expiry in
+// the WHERE clause rather than a check on the result — the same shape as
+// AccessTokenUser, so a caller cannot forget to apply it. The token is not spent
+// by reading it: a download that is interrupted has to be resumable, and the row
+// expires on its own within the hour either way.
+func (s *Store) DownloadToken(tokenHash string) (DownloadGrant, error) {
+	var g DownloadGrant
+	err := s.db.QueryRow(`SELECT comic_id,user_id FROM comic_download_tokens
+		WHERE token_hash=? AND expires_at>?`, tokenHash, time.Now().Unix()).
+		Scan(&g.ComicID, &g.UserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DownloadGrant{}, ErrNotFound
+	}
+	if err != nil {
+		return DownloadGrant{}, err
+	}
+	return g, nil
+}
+
 // --- Comics ---
 
 // visibleComics returns a SQL boolean fragment, plus its args, that is true for

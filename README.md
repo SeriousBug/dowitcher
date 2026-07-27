@@ -93,8 +93,10 @@ hand it to your agent as a bearer credential against `https://your-instance/mcp`
 user who minted it and sees exactly what that user can see; an admin's token can drive the admin-only
 tools (claiming a library comic). Signing out your other devices from Settings revokes every token too.
 
-Tools: `list_comics`, `search_comics`, `get_comic`, `list_tags`, `tag_comic`, `untag_comic`,
-`list_collections`, `create_collection`, `add_to_collection`, and `claim_comic` (admin).
+Tools: `list_comics`, `get_comic`, `rename_comic`, `create_download_link`, `delete_comic`,
+`list_tags`, `tag_comics`, `list_collections`, `create_collection`, `update_collection`,
+`delete_collection`, `edit_collection_comics`, `reorder_collection`, and, for admins,
+`claim_comic`, `set_comic_hidden` and `list_hidden_comics`.
 
 ### Recovery
 

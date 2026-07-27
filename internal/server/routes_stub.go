@@ -164,6 +164,13 @@ func (s *Server) registerLibraryRoutes() {
 	// admin's call rather than a first-come-first-served race between users.
 	s.mux.HandleFunc("POST /api/comics/{id}/claim", s.requireAdmin(s.handleClaimComic))
 	s.mux.HandleFunc("POST /api/comics/{id}/unclaim", s.requireAdmin(s.handleUnclaimComic))
+	// The one comic route outside /api and outside requireAuth: the token in the
+	// path is the credential, so a session would be a second one. It is minted
+	// per comic and per user and expires within the hour, and the handler re-runs
+	// that user's visibility check before serving a byte. It sits off /api
+	// because it is a link a person opens in a browser, not something the SPA
+	// calls.
+	s.mux.HandleFunc("GET /comics/{id}/download/{token}", s.handleComicDownload)
 	s.mux.HandleFunc("GET /api/tags", s.requireAuth(s.handleListTags))
 
 	// Collections. Sharing grants read, never write, so every mutation is gated

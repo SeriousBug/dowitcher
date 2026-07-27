@@ -218,13 +218,13 @@ func TestMCPClaimIsAdminOnly(t *testing.T) {
 }
 
 // TestMCPHideAndUnhide: hiding takes a library comic off everyone's shelf, the
-// hidden listing is the only place it survives, and unhide puts it back.
+// hidden listing is the only place it survives, and hidden=false puts it back.
 func TestMCPHideAndUnhide(t *testing.T) {
 	e := setup(t)
 	lib := comicID(t, e.store, e.aliceID, "Public")
 
 	alice := connect(t, e.url, token(t, e.store, e.aliceID))
-	call(t, alice, "hide_comic", ComicIDInput{ComicID: lib}, nil)
+	call(t, alice, "set_comic_hidden", SetComicHiddenInput{ComicID: lib, Hidden: true}, nil)
 
 	// Gone for bob as well: the flag is server-wide, not per-user.
 	bob := connect(t, e.url, token(t, e.store, e.bobID))
@@ -240,22 +240,36 @@ func TestMCPHideAndUnhide(t *testing.T) {
 		t.Errorf("the hidden listing should carry it, got %+v", hidden.Comics)
 	}
 
-	call(t, alice, "unhide_comic", ComicIDInput{ComicID: lib}, nil)
+	call(t, alice, "set_comic_hidden", SetComicHiddenInput{ComicID: lib, Hidden: false}, nil)
 	call(t, bob, "list_comics", ListComicsInput{}, &bobList)
 	if !hasTitle(bobList.Comics, "Public") {
 		t.Error("an unhidden comic should be back on the shelf")
 	}
 }
 
+// TestMCPSetComicHiddenRequiresHidden: hidden has no default, so a call that
+// omits it is rejected by schema validation rather than hiding the comic.
+func TestMCPSetComicHiddenRequiresHidden(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+
+	alice := connect(t, e.url, token(t, e.store, e.aliceID))
+	callErr(t, alice, "set_comic_hidden", map[string]any{"comicId": lib})
+
+	if _, err := e.store.GetComic(e.aliceID, lib); err != nil {
+		t.Errorf("a call without hidden must leave the comic on the shelf: %v", err)
+	}
+}
+
 // TestMCPHideIsAdminOnly: the gate the HTTP routes get from requireAdmin is
-// applied in this layer too, for all three tools.
+// applied in this layer too, for both tools.
 func TestMCPHideIsAdminOnly(t *testing.T) {
 	e := setup(t)
 	lib := comicID(t, e.store, e.aliceID, "Public")
 
 	bob := connect(t, e.url, token(t, e.store, e.bobID))
-	callErr(t, bob, "hide_comic", ComicIDInput{ComicID: lib})
-	callErr(t, bob, "unhide_comic", ComicIDInput{ComicID: lib})
+	callErr(t, bob, "set_comic_hidden", SetComicHiddenInput{ComicID: lib, Hidden: true})
+	callErr(t, bob, "set_comic_hidden", SetComicHiddenInput{ComicID: lib, Hidden: false})
 	callErr(t, bob, "list_hidden_comics", struct{}{})
 
 	var list ListComicsOutput
@@ -314,7 +328,7 @@ func TestMCPDeleteComicRefusesOthersUpload(t *testing.T) {
 	}
 }
 
-// TestMCPBulkTagAndRename: one tag_comic call tags several comics at once, an
+// TestMCPBulkTagAndRename: one tag_comics call tags several comics at once, an
 // unseen id is skipped rather than fatal, and rename is gated on ownership.
 func TestMCPBulkTagAndRename(t *testing.T) {
 	e := setup(t)
@@ -323,7 +337,7 @@ func TestMCPBulkTagAndRename(t *testing.T) {
 	sess := connect(t, e.url, token(t, e.store, e.aliceID))
 
 	var out BulkTagOutput
-	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib, up}, Tags: []string{"read"}}, &out)
+	call(t, sess, "tag_comics", TagComicsInput{ComicIDs: []string{lib, up}, Add: []string{"read"}}, &out)
 	if len(out.Comics) != 2 {
 		t.Fatalf("bulk tag should touch both comics, got %d", len(out.Comics))
 	}
@@ -334,7 +348,7 @@ func TestMCPBulkTagAndRename(t *testing.T) {
 	}
 
 	// An unseen id is recorded in Skipped, not fatal to the batch.
-	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib, "nope"}, Tags: []string{"fav"}}, &out)
+	call(t, sess, "tag_comics", TagComicsInput{ComicIDs: []string{lib, "nope"}, Add: []string{"fav"}}, &out)
 	if len(out.Skipped) != 1 || out.Skipped[0] != "nope" {
 		t.Errorf("skipped = %v, want [nope]", out.Skipped)
 	}
@@ -362,8 +376,8 @@ func TestMCPTagRoundTrip(t *testing.T) {
 	sess := connect(t, e.url, token(t, e.store, e.aliceID))
 
 	var tagged BulkTagOutput
-	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib}, Tags: []string{"read", "favorite"}}, &tagged)
-	call(t, sess, "tag_comic", TagComicInput{ComicIDs: []string{lib}, Tags: []string{"classic"}}, &tagged)
+	call(t, sess, "tag_comics", TagComicsInput{ComicIDs: []string{lib}, Add: []string{"read", "favorite"}}, &tagged)
+	call(t, sess, "tag_comics", TagComicsInput{ComicIDs: []string{lib}, Add: []string{"classic"}}, &tagged)
 	if len(tagged.Comics) != 1 || len(tagged.Comics[0].Tags) != 3 {
 		t.Errorf("a second tag call should add, not replace; got %+v", tagged.Comics)
 	}
@@ -380,6 +394,128 @@ func TestMCPTagRoundTrip(t *testing.T) {
 	call(t, bobSess, "list_tags", struct{}{}, &bobTags)
 	if len(bobTags.Tags) != 0 {
 		t.Errorf("alice's tags must not appear for bob, got %+v", bobTags.Tags)
+	}
+}
+
+// TestMCPTagComicsAddsAndRemovesInOneCall: the merged tool expresses a retag as a
+// single write per comic, so nothing is momentarily untagged between two calls.
+func TestMCPTagComicsAddsAndRemovesInOneCall(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+	sess := connect(t, e.url, token(t, e.store, e.aliceID))
+
+	var out BulkTagOutput
+	call(t, sess, "tag_comics", TagComicsInput{ComicIDs: []string{lib}, Add: []string{"unread", "keep"}}, &out)
+	call(t, sess, "tag_comics", TagComicsInput{
+		ComicIDs: []string{lib},
+		Add:      []string{"read"},
+		Remove:   []string{"unread"},
+	}, &out)
+
+	if len(out.Comics) != 1 {
+		t.Fatalf("want one comic back, got %+v", out.Comics)
+	}
+	got := map[string]bool{}
+	for _, name := range out.Comics[0].Tags {
+		got[name] = true
+	}
+	if !got["read"] || !got["keep"] || got["unread"] {
+		t.Errorf("tags = %v, want read+keep and no unread", out.Comics[0].Tags)
+	}
+}
+
+// TestMCPEditCollectionComics: one call adds and removes, the adds land in the
+// order given, and an id the caller cannot see is skipped rather than fatal.
+func TestMCPEditCollectionComics(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+	up := comicID(t, e.store, e.aliceID, "AliceOnly")
+	bobUpload := comicID(t, e.store, e.bobID, "BobOnly")
+	sess := connect(t, e.url, token(t, e.store, e.aliceID))
+
+	var col CollectionOutput
+	call(t, sess, "create_collection", CreateCollectionInput{Name: "Pile"}, &col)
+
+	var edited EditCollectionComicsOutput
+	call(t, sess, "edit_collection_comics", EditCollectionComicsInput{
+		CollectionID: col.Collection.ID,
+		Add:          []string{lib, up},
+	}, &edited)
+	if edited.Collection.Count != 2 {
+		t.Fatalf("count = %d, want 2", edited.Collection.Count)
+	}
+
+	// The adds keep their given order, which is what makes a follow-up reorder
+	// unnecessary.
+	var listed ListComicsOutput
+	call(t, sess, "list_comics", ListComicsInput{Collection: col.Collection.ID}, &listed)
+	if len(listed.Comics) != 2 || listed.Comics[0].ID != lib || listed.Comics[1].ID != up {
+		t.Errorf("collection order = %+v, want [Public AliceOnly]", listed.Comics)
+	}
+
+	// One call that swaps membership: bob's upload is invisible to alice, so it
+	// lands in skipped without undoing the removal.
+	call(t, sess, "edit_collection_comics", EditCollectionComicsInput{
+		CollectionID: col.Collection.ID,
+		Remove:       []string{lib},
+		Add:          []string{bobUpload},
+	}, &edited)
+	if len(edited.Skipped) != 1 || edited.Skipped[0] != bobUpload {
+		t.Errorf("skipped = %v, want [%s]", edited.Skipped, bobUpload)
+	}
+	call(t, sess, "list_comics", ListComicsInput{Collection: col.Collection.ID}, &listed)
+	if len(listed.Comics) != 1 || listed.Comics[0].ID != up {
+		t.Errorf("after the swap the collection should hold only AliceOnly, got %+v", listed.Comics)
+	}
+}
+
+// TestMCPUpdateCollectionCoverAndName: the folded-in cover applies alongside a
+// rename, and an unreachable cover comic aborts before either write lands.
+func TestMCPUpdateCollectionCoverAndName(t *testing.T) {
+	e := setup(t)
+	lib := comicID(t, e.store, e.aliceID, "Public")
+	up := comicID(t, e.store, e.aliceID, "AliceOnly")
+	bobUpload := comicID(t, e.store, e.bobID, "BobOnly")
+	sess := connect(t, e.url, token(t, e.store, e.aliceID))
+
+	var col CollectionOutput
+	call(t, sess, "create_collection", CreateCollectionInput{Name: "Pile"}, &col)
+	var edited EditCollectionComicsOutput
+	call(t, sess, "edit_collection_comics", EditCollectionComicsInput{
+		CollectionID: col.Collection.ID,
+		Add:          []string{lib, up},
+	}, &edited)
+
+	// The cover is the second comic, so the fallback to first-in-order cannot be
+	// mistaken for the pin having applied.
+	name, cover := "Batch", up
+	var updated CollectionOutput
+	call(t, sess, "update_collection", UpdateCollectionInput{
+		CollectionID: col.Collection.ID,
+		Name:         &name,
+		CoverComicID: &cover,
+	}, &updated)
+	if updated.Collection.Name != "Batch" || updated.Collection.CoverComicID != up {
+		t.Errorf("collection = %+v, want name Batch and cover %s", updated.Collection, up)
+	}
+
+	// Bob's upload is invisible to alice: the whole update has to be refused, with
+	// the rename in the same call left unapplied.
+	fails, badCover := "Renamed", bobUpload
+	callErr(t, sess, "update_collection", UpdateCollectionInput{
+		CollectionID: col.Collection.ID,
+		Name:         &fails,
+		CoverComicID: &badCover,
+	})
+	after, err := e.store.GetCollection(e.aliceID, col.Collection.ID)
+	if err != nil {
+		t.Fatalf("get collection: %v", err)
+	}
+	if after.Name != "Batch" {
+		t.Errorf("a refused cover must not let the rename land, name = %q", after.Name)
+	}
+	if after.CoverComicID != up {
+		t.Errorf("cover = %q, want the earlier pick %s", after.CoverComicID, up)
 	}
 }
 

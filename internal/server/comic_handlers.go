@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/cbz"
 	"github.com/SeriousBug/dowitcher/internal/imports"
 	"github.com/SeriousBug/dowitcher/internal/library"
@@ -337,6 +339,78 @@ func (s *Server) handleComicCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(data)
+}
+
+// handleComicDownload serves a whole CBZ against a minted download token. It is
+// the one comic route with no session behind it: the token in the path is the
+// credential, and it names both the comic and the user it was minted for, so it
+// can grant no more than that user could already read. The check is re-run here
+// rather than trusted from minting time, because a comic can be unshared,
+// claimed or hidden during the hour the link is alive.
+func (s *Server) handleComicDownload(w http.ResponseWriter, r *http.Request) {
+	grant, err := s.store.DownloadToken(auth.HashToken(r.PathValue("token")))
+	if err != nil && !isNotFound(err) {
+		log.Printf("download token lookup: %v", err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	// A token for another comic is refused rather than redirected to the one it
+	// does cover: the link the holder was given is the one that must work.
+	if err != nil || grant.ComicID != r.PathValue("id") {
+		writeErr(w, http.StatusNotFound, "this download link has expired or is not valid")
+		return
+	}
+	comic, err := s.store.GetComic(grant.UserID, grant.ComicID)
+	if err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "this download link is no longer valid")
+			return
+		}
+		log.Printf("get comic %s for download: %v", grant.ComicID, err)
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	row, ok := s.comicRow(w, comic.ID)
+	if !ok {
+		return
+	}
+	f, err := os.Open(s.comicFile(row))
+	if err != nil {
+		log.Printf("open comic %s (%s) for download: %v", comic.ID, row.Path, err)
+		writeErr(w, http.StatusInternalServerError, "this comic's file could not be read")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		log.Printf("stat comic %s (%s): %v", comic.ID, row.Path, err)
+		writeErr(w, http.StatusInternalServerError, "this comic's file could not be read")
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.comicbook+zip")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment",
+		map[string]string{"filename": downloadFilename(comic.Title)}))
+	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// downloadFilename turns a display title into a safe .cbz filename. Path
+// separators and control characters are the only real hazards — everything else
+// a user may have typed into a title is left alone so the file they get is
+// recognisably the comic they asked for.
+func downloadFilename(title string) string {
+	name := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r < 0x20 {
+			return '-'
+		}
+		return r
+	}, strings.TrimSpace(title))
+	if name == "" {
+		name = "comic"
+	}
+	if !strings.EqualFold(filepath.Ext(name), ".cbz") {
+		name += ".cbz"
+	}
+	return name
 }
 
 // generateCover decodes the cover page and scales it, caching the result when a

@@ -152,7 +152,7 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, api.AppVersion{Version: s.cfg.Version})
+	writeJSON(w, http.StatusOK, api.AppVersion{Version: s.cfg.Version, MCPEnabled: s.cfg.MCPEnabled})
 }
 
 // noCache is the caching rule for the files that decide which version of the app

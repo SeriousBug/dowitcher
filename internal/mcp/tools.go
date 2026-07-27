@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SeriousBug/dowitcher/internal/api"
+	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -52,32 +54,10 @@ func viewComics(cs []api.Comic) []comicView {
 
 // --- list_comics ---
 
+// ListComicsInput is both the browse and the search shape: every field is a
+// filter, and no filters means the whole library. Splitting these into two tools
+// only made an agent guess which one it wanted.
 type ListComicsInput struct {
-	Offset int `json:"offset,omitempty" jsonschema:"how many comics to skip; default 0"`
-	Limit  int `json:"limit,omitempty" jsonschema:"maximum comics to return; default 50, max 200"`
-}
-
-type ListComicsOutput struct {
-	Comics []comicView `json:"comics"`
-	Total  int         `json:"total" jsonschema:"total comics visible to you before paging"`
-}
-
-func (s *Server) listComics(ctx context.Context, _ *mcp.CallToolRequest, in ListComicsInput) (*mcp.CallToolResult, ListComicsOutput, error) {
-	u, ok := callerFrom(ctx)
-	if !ok {
-		return nil, ListComicsOutput{}, errNoUser
-	}
-	f := store.ComicFilter{Offset: max(in.Offset, 0), Limit: pageLimit(in.Limit)}
-	comics, total, err := s.store.ListComicsFiltered(u.ID, f)
-	if err != nil {
-		return nil, ListComicsOutput{}, dbErr(err)
-	}
-	return nil, ListComicsOutput{Comics: viewComics(comics), Total: total}, nil
-}
-
-// --- search_comics ---
-
-type SearchComicsInput struct {
 	Query      string `json:"query,omitempty" jsonschema:"substring matched against a comic's title or series, case-insensitive"`
 	Tag        string `json:"tag,omitempty" jsonschema:"limit to comics carrying this tag of yours"`
 	Series     string `json:"series,omitempty" jsonschema:"exact series name to limit to"`
@@ -86,7 +66,12 @@ type SearchComicsInput struct {
 	Limit      int    `json:"limit,omitempty" jsonschema:"maximum results to return; default 50, max 200"`
 }
 
-func (s *Server) searchComics(ctx context.Context, _ *mcp.CallToolRequest, in SearchComicsInput) (*mcp.CallToolResult, ListComicsOutput, error) {
+type ListComicsOutput struct {
+	Comics []comicView `json:"comics"`
+	Total  int         `json:"total" jsonschema:"total comics matching before paging"`
+}
+
+func (s *Server) listComics(ctx context.Context, _ *mcp.CallToolRequest, in ListComicsInput) (*mcp.CallToolResult, ListComicsOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
 		return nil, ListComicsOutput{}, errNoUser
@@ -149,42 +134,32 @@ func (s *Server) listTags(ctx context.Context, _ *mcp.CallToolRequest, _ struct{
 	return nil, ListTagsOutput{Tags: tags}, nil
 }
 
-// --- tag_comic / untag_comic ---
+// --- tag_comics ---
 
-// TagComicInput tags or untags a set of comics in one call. comicIds is a list
-// so "tag these forty issues as read" is one tool call rather than forty: the
-// tags apply to every comic named, and every comic is fetched, merged and
-// written on its own so one unseen id does not sink the rest.
-type TagComicInput struct {
-	ComicIDs []string `json:"comicIds" jsonschema:"ids of the comics to tag or untag"`
-	Tags     []string `json:"tags" jsonschema:"one or more tag names to add or remove"`
+// TagComicsInput tags and untags a set of comics in one call. comicIds is a list
+// so "tag these forty issues as read" is one tool call rather than forty, and
+// add and remove travel together so a retag is one atomic write per comic
+// instead of two calls racing each other.
+type TagComicsInput struct {
+	ComicIDs []string `json:"comicIds" jsonschema:"ids of the comics to retag"`
+	Add      []string `json:"add,omitempty" jsonschema:"tag names to add to every comic listed"`
+	Remove   []string `json:"remove,omitempty" jsonschema:"tag names to remove from every comic listed"`
 }
 
-// BulkTagOutput reports what a bulk tag/untag actually touched: the comics that
-// were updated, plus the ids that could not be seen so the caller learns which
-// of a long list was skipped rather than getting a bare error for the batch.
+// BulkTagOutput reports what a bulk retag actually touched: the comics that were
+// updated, plus the ids that could not be seen so the caller learns which of a
+// long list was skipped rather than getting a bare error for the batch.
 type BulkTagOutput struct {
 	Comics  []comicView `json:"comics"`
 	Skipped []string    `json:"skipped,omitempty" jsonschema:"ids that were not found or not visible to you"`
 }
 
-// tagComic adds tags without dropping the ones already there: the store's tag
-// write replaces the caller's whole set on a comic, so an add has to read the
-// current set and union the new names in. This is what makes "tag everything as
-// read" not silently strip whatever else was on each comic.
-func (s *Server) tagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, BulkTagOutput, error) {
-	return s.bulkTag(ctx, in, false)
-}
-
-func (s *Server) untagComic(ctx context.Context, _ *mcp.CallToolRequest, in TagComicInput) (*mcp.CallToolResult, BulkTagOutput, error) {
-	return s.bulkTag(ctx, in, true)
-}
-
-// bulkTag applies one add-or-remove of the same tag set across every comic named.
-// remove flips it from union to difference. A comic the caller cannot see is
-// recorded in Skipped rather than failing the batch, so a stray id in a long
-// list does not undo the comics that did get tagged.
-func (s *Server) bulkTag(ctx context.Context, in TagComicInput, remove bool) (*mcp.CallToolResult, BulkTagOutput, error) {
+// tagComics rewrites each comic's tag set through mergeTags rather than writing
+// the requested names outright: the store's tag write replaces the caller's whole
+// set on a comic, so anything already there has to be read and carried across.
+// A comic the caller cannot see is recorded in Skipped rather than failing the
+// batch, so a stray id in a long list does not undo the comics that did change.
+func (s *Server) tagComics(ctx context.Context, _ *mcp.CallToolRequest, in TagComicsInput) (*mcp.CallToolResult, BulkTagOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
 		return nil, BulkTagOutput{}, errNoUser
@@ -199,12 +174,7 @@ func (s *Server) bulkTag(ctx context.Context, in TagComicInput, remove bool) (*m
 			}
 			return nil, BulkTagOutput{}, dbErr(err)
 		}
-		var next []string
-		if remove {
-			next = mergeTags(c.Tags, nil, in.Tags)
-		} else {
-			next = mergeTags(c.Tags, in.Tags, nil)
-		}
+		next := mergeTags(c.Tags, in.Add, in.Remove)
 		if err := s.store.SetComicTags(u.ID, id, next); err != nil {
 			return nil, BulkTagOutput{}, dbErr(err)
 		}
@@ -257,7 +227,7 @@ func (s *Server) renameComic(ctx context.Context, _ *mcp.CallToolRequest, in Ren
 	return nil, ComicOutput{Comic: viewComic(updated)}, nil
 }
 
-// --- list_collections / create_collection / add_to_collection ---
+// --- list_collections / create_collection ---
 
 type ListCollectionsInput struct {
 	Kind string `json:"kind,omitempty" jsonschema:"limit to one kind: 'collection' or 'readinglist'; omit for both"`
@@ -316,6 +286,7 @@ type UpdateCollectionInput struct {
 	Name         *string `json:"name,omitempty" jsonschema:"new name; omit to leave unchanged"`
 	Summary      *string `json:"summary,omitempty" jsonschema:"new description; omit to leave unchanged"`
 	Shared       *bool   `json:"shared,omitempty" jsonschema:"share with everyone (true) or make private (false); omit to leave unchanged"`
+	CoverComicID *string `json:"coverComicId,omitempty" jsonschema:"id of a comic whose cover represents the collection; omit to leave unchanged"`
 }
 
 func (s *Server) updateCollection(ctx context.Context, _ *mcp.CallToolRequest, in UpdateCollectionInput) (*mcp.CallToolResult, CollectionOutput, error) {
@@ -326,9 +297,26 @@ func (s *Server) updateCollection(ctx context.Context, _ *mcp.CallToolRequest, i
 	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
 		return nil, CollectionOutput{}, errors.New("name cannot be blank")
 	}
+	// The cover and the other fields are two separate store writes, so an
+	// unreachable cover comic has to be caught before either lands. Otherwise a
+	// rename would stick and only the cover would fail, leaving the caller with a
+	// half-applied edit it never asked for.
+	if in.CoverComicID != nil {
+		if _, err := s.store.OwnedCollection(u.ID, in.CollectionID); err != nil {
+			return nil, CollectionOutput{}, notFoundOr(err, "collection")
+		}
+		if _, err := s.store.GetComic(u.ID, *in.CoverComicID); err != nil {
+			return nil, CollectionOutput{}, notFoundOr(err, "cover comic")
+		}
+	}
 	req := api.UpdateCollectionRequest{Name: in.Name, Summary: in.Summary, Shared: in.Shared}
 	if err := s.store.UpdateCollection(u.ID, in.CollectionID, req); err != nil {
 		return nil, CollectionOutput{}, notFoundOr(err, "collection")
+	}
+	if in.CoverComicID != nil {
+		if err := s.store.SetCollectionCover(u.ID, in.CollectionID, *in.CoverComicID); err != nil {
+			return nil, CollectionOutput{}, notFoundOr(err, "collection or comic")
+		}
 	}
 	col, err := s.store.GetCollection(u.ID, in.CollectionID)
 	if err != nil {
@@ -352,17 +340,63 @@ func (s *Server) deleteCollection(ctx context.Context, _ *mcp.CallToolRequest, i
 	return nil, okOutput{OK: true}, nil
 }
 
-// --- remove_from_collection / reorder_collection / set_collection_cover ---
+// --- edit_collection_comics / reorder_collection ---
 
-func (s *Server) removeFromCollection(ctx context.Context, _ *mcp.CallToolRequest, in AddToCollectionInput) (*mcp.CallToolResult, okOutput, error) {
+// EditCollectionComicsInput changes a collection's membership in one call. Adds
+// and removes travel together because a "swap these issues for those" edit is one
+// intent, and adds land in the order given: the store appends at MAX(position)+1,
+// so the caller's order is the resulting reading order.
+type EditCollectionComicsInput struct {
+	CollectionID string   `json:"collectionId" jsonschema:"id of one of your own collections"`
+	Add          []string `json:"add,omitempty" jsonschema:"ids of comics to append, in the order you want them"`
+	Remove       []string `json:"remove,omitempty" jsonschema:"ids of comics to drop from the collection"`
+}
+
+// EditCollectionComicsOutput returns the collection as it now stands, plus the
+// ids that did not apply, matching BulkTagOutput: one unseen or absent comic in a
+// long list should not undo the ones that did move.
+type EditCollectionComicsOutput struct {
+	Collection api.Collection `json:"collection"`
+	Skipped    []string       `json:"skipped,omitempty" jsonschema:"ids that were not visible to you, or not in the collection to begin with"`
+}
+
+func (s *Server) editCollectionComics(ctx context.Context, _ *mcp.CallToolRequest, in EditCollectionComicsInput) (*mcp.CallToolResult, EditCollectionComicsOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
-		return nil, okOutput{}, errNoUser
+		return nil, EditCollectionComicsOutput{}, errNoUser
 	}
-	if err := s.store.RemoveFromCollection(u.ID, in.CollectionID, in.ComicID); err != nil {
-		return nil, okOutput{}, notFoundOr(err, "collection or comic")
+	// A collection the caller does not own fails the whole call: unlike a bad
+	// comic id, nothing in the batch could have applied.
+	if _, err := s.store.OwnedCollection(u.ID, in.CollectionID); err != nil {
+		return nil, EditCollectionComicsOutput{}, notFoundOr(err, "collection")
 	}
-	return nil, okOutput{OK: true}, nil
+	var out EditCollectionComicsOutput
+	// Removals run first so a call that swaps one comic for another cannot have
+	// the removal undo the add.
+	for _, id := range in.Remove {
+		if err := s.store.RemoveFromCollection(u.ID, in.CollectionID, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out.Skipped = append(out.Skipped, id)
+				continue
+			}
+			return nil, EditCollectionComicsOutput{}, dbErr(err)
+		}
+	}
+	for _, id := range in.Add {
+		if err := s.store.AddToCollection(u.ID, in.CollectionID, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				out.Skipped = append(out.Skipped, id)
+				continue
+			}
+			return nil, EditCollectionComicsOutput{}, dbErr(err)
+		}
+	}
+	col, err := s.store.GetCollection(u.ID, in.CollectionID)
+	if err != nil {
+		return nil, EditCollectionComicsOutput{}, dbErr(err)
+	}
+	out.Collection = col
+	return nil, out, nil
 }
 
 type ReorderCollectionInput struct {
@@ -377,44 +411,6 @@ func (s *Server) reorderCollection(ctx context.Context, _ *mcp.CallToolRequest, 
 	}
 	if err := s.store.ReorderCollection(u.ID, in.CollectionID, in.ComicIDs); err != nil {
 		return nil, okOutput{}, notFoundOr(err, "collection")
-	}
-	return nil, okOutput{OK: true}, nil
-}
-
-type SetCoverInput struct {
-	CollectionID string `json:"collectionId" jsonschema:"id of one of your own collections"`
-	ComicID      string `json:"comicId" jsonschema:"id of a comic in the collection to use as its cover"`
-}
-
-func (s *Server) setCollectionCover(ctx context.Context, _ *mcp.CallToolRequest, in SetCoverInput) (*mcp.CallToolResult, CollectionOutput, error) {
-	u, ok := callerFrom(ctx)
-	if !ok {
-		return nil, CollectionOutput{}, errNoUser
-	}
-	if err := s.store.SetCollectionCover(u.ID, in.CollectionID, in.ComicID); err != nil {
-		return nil, CollectionOutput{}, notFoundOr(err, "collection or comic")
-	}
-	col, err := s.store.GetCollection(u.ID, in.CollectionID)
-	if err != nil {
-		return nil, CollectionOutput{}, dbErr(err)
-	}
-	return nil, CollectionOutput{Collection: col}, nil
-}
-
-type AddToCollectionInput struct {
-	CollectionID string `json:"collectionId" jsonschema:"id of one of your own collections"`
-	ComicID      string `json:"comicId" jsonschema:"id of the comic to add"`
-}
-
-func (s *Server) addToCollection(ctx context.Context, _ *mcp.CallToolRequest, in AddToCollectionInput) (*mcp.CallToolResult, okOutput, error) {
-	u, ok := callerFrom(ctx)
-	if !ok {
-		return nil, okOutput{}, errNoUser
-	}
-	if err := s.store.AddToCollection(u.ID, in.CollectionID, in.ComicID); err != nil {
-		// A miss here is either an unowned/absent collection or a comic the caller
-		// can't see; the store returns the same sentinel for both by design.
-		return nil, okOutput{}, notFoundOr(err, "collection or comic")
 	}
 	return nil, okOutput{OK: true}, nil
 }
@@ -443,9 +439,16 @@ func (s *Server) claimComic(ctx context.Context, _ *mcp.CallToolRequest, in Comi
 	return nil, ComicOutput{Comic: viewComic(c)}, nil
 }
 
-// --- hide_comic / unhide_comic / list_hidden_comics (admin) ---
+// --- set_comic_hidden / list_hidden_comics (admin) ---
 
-func (s *Server) hideComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
+// SetComicHiddenInput carries hidden as a required field with no default, so
+// hiding a comic is never something an agent can do by leaving a field out.
+type SetComicHiddenInput struct {
+	ComicID string `json:"comicId" jsonschema:"id of the comic"`
+	Hidden  bool   `json:"hidden" jsonschema:"true to take the comic off every shelf, false to put it back"`
+}
+
+func (s *Server) setComicHidden(ctx context.Context, _ *mcp.CallToolRequest, in SetComicHiddenInput) (*mcp.CallToolResult, okOutput, error) {
 	u, ok := callerFrom(ctx)
 	if !ok {
 		return nil, okOutput{}, errNoUser
@@ -454,28 +457,18 @@ func (s *Server) hideComic(ctx context.Context, _ *mcp.CallToolRequest, in Comic
 	if !u.IsAdmin {
 		return nil, okOutput{}, errors.New("hiding a comic is an admin action")
 	}
-	if _, err := s.store.GetComic(u.ID, in.ComicID); err != nil {
+	// Unhiding needs the hidden-inclusive lookup, since the ordinary one can no
+	// longer see the row it is about to restore.
+	var err error
+	if in.Hidden {
+		_, err = s.store.GetComic(u.ID, in.ComicID)
+	} else {
+		_, err = s.store.GetComicWithHidden(u.ID, in.ComicID)
+	}
+	if err != nil {
 		return nil, okOutput{}, notFoundOr(err, "comic")
 	}
-	if err := s.store.SetComicHidden(in.ComicID, true); err != nil {
-		return nil, okOutput{}, notFoundOr(err, "comic")
-	}
-	return nil, okOutput{OK: true}, nil
-}
-
-func (s *Server) unhideComic(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, okOutput, error) {
-	u, ok := callerFrom(ctx)
-	if !ok {
-		return nil, okOutput{}, errNoUser
-	}
-	if !u.IsAdmin {
-		return nil, okOutput{}, errors.New("unhiding a comic is an admin action")
-	}
-	// The hidden-inclusive lookup, since the ordinary one can no longer see it.
-	if _, err := s.store.GetComicWithHidden(u.ID, in.ComicID); err != nil {
-		return nil, okOutput{}, notFoundOr(err, "comic")
-	}
-	if err := s.store.SetComicHidden(in.ComicID, false); err != nil {
+	if err := s.store.SetComicHidden(in.ComicID, in.Hidden); err != nil {
 		return nil, okOutput{}, notFoundOr(err, "comic")
 	}
 	return nil, okOutput{OK: true}, nil
@@ -494,6 +487,39 @@ func (s *Server) listHiddenComics(ctx context.Context, _ *mcp.CallToolRequest, _
 		return nil, ListComicsOutput{}, dbErr(err)
 	}
 	return nil, ListComicsOutput{Comics: viewComics(comics), Total: len(comics)}, nil
+}
+
+// --- create_download_link ---
+
+// downloadTTL is how long a minted link stays good. It is short because the URL
+// is the whole credential: anyone holding it can fetch that one CBZ, so it has
+// to stop working long before it can be filed away and forgotten.
+const downloadTTL = time.Hour
+
+type DownloadLinkOutput struct {
+	URL string `json:"url" jsonschema:"absolute URL that downloads the comic's CBZ file"`
+	// ExpiresAt is Unix seconds, matching every other timestamp the API returns.
+	ExpiresAt int64 `json:"expiresAt" jsonschema:"Unix seconds after which the URL stops working"`
+}
+
+func (s *Server) createDownloadLink(ctx context.Context, _ *mcp.CallToolRequest, in ComicIDInput) (*mcp.CallToolResult, DownloadLinkOutput, error) {
+	u, ok := callerFrom(ctx)
+	if !ok {
+		return nil, DownloadLinkOutput{}, errNoUser
+	}
+	c, err := s.store.GetComic(u.ID, in.ComicID)
+	if err != nil {
+		return nil, DownloadLinkOutput{}, notFoundOr(err, "comic")
+	}
+	secret := auth.RandToken(32)
+	exp := time.Now().Add(downloadTTL)
+	if err := s.store.CreateDownloadToken(auth.HashToken(secret), c.ID, u.ID, exp.Unix()); err != nil {
+		return nil, DownloadLinkOutput{}, dbErr(err)
+	}
+	return nil, DownloadLinkOutput{
+		URL:       fmt.Sprintf("%s/comics/%s/download/%s", strings.TrimSuffix(s.origin, "/"), c.ID, secret),
+		ExpiresAt: exp.Unix(),
+	}, nil
 }
 
 // --- delete_comic ---
