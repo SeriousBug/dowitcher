@@ -11,6 +11,7 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/mcp"
+	"github.com/SeriousBug/dowitcher/internal/ocr"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/SeriousBug/dowitcher/web"
 )
@@ -43,6 +44,10 @@ type Config struct {
 	// token-authenticated door into the library, so an operator opts in rather
 	// than having it exposed the moment they upgrade.
 	MCPEnabled bool
+	// OCR recognises page text for the MCP read_comic_pages tool. Built by main
+	// so a bad DOWITCHER_TESSDATA kills the process at startup rather than at the
+	// first tool call. Nil leaves the text format unavailable.
+	OCR *ocr.Engine
 	// Version is the build version reported to MCP clients and served at
 	// GET /api/version. Empty means the build did not say, and the UI hides it.
 	Version string
@@ -137,7 +142,7 @@ func (s *Server) routes() {
 	// more specific than the "/" catch-all, so Go 1.22 mux precedence gives them
 	// priority regardless of registration order.
 	if s.cfg.MCPEnabled {
-		h := mcp.New(s.store, s.cfg.Version, s.cfg.Origin, s.cfg.UploadsDir).Handler()
+		h := mcp.New(s.store, s.cfg.Version, s.cfg.Origin, s.cfg.UploadsDir, s.cfg.LibraryRoot, s.cfg.OCR).Handler()
 		s.mux.Handle("/mcp", h)
 		s.mux.Handle("/mcp/", h)
 		s.registerOAuthRoutes()
@@ -152,7 +157,7 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, api.AppVersion{Version: s.cfg.Version})
+	writeJSON(w, http.StatusOK, api.AppVersion{Version: s.cfg.Version, MCPEnabled: s.cfg.MCPEnabled})
 }
 
 // noCache is the caching rule for the files that decide which version of the app

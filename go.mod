@@ -6,13 +6,16 @@ require (
 	github.com/SeriousBug/webp-go-pure v1.0.0
 	github.com/bodgit/sevenzip v1.6.5
 	github.com/coder/websocket v1.8.15
+	github.com/danlock/pkg v0.0.18-fc7c42d
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gen2brain/avif v0.6.0
 	github.com/go-webauthn/webauthn v0.17.4
+	github.com/jerbob92/wazero-emscripten-embind v1.3.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/pdfcpu/pdfcpu v0.13.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.54.0
@@ -48,7 +51,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
-	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -56,8 +58,9 @@ require (
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/tools v0.48.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

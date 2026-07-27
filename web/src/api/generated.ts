@@ -413,9 +413,13 @@ export interface ComicCount {
 /**
  * AppVersion is the build the server is running: a release tag ("v1.2.3") or a
  * dated development build ("dev-2026-07-26").
+ * MCPEnabled rides along rather than getting its own endpoint: both are facts
+ * about how this instance was built and started, they never change while it is
+ * running, and the client already fetches this once with an infinite stale time.
  */
 export interface AppVersion {
   version: string;
+  mcpEnabled: boolean;
 }
 /**
  * WSType discriminates a WSMessage. The client switches on it.

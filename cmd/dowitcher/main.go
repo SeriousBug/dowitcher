@@ -19,6 +19,7 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/imports"
 	"github.com/SeriousBug/dowitcher/internal/library"
+	"github.com/SeriousBug/dowitcher/internal/ocr"
 	"github.com/SeriousBug/dowitcher/internal/server"
 	"github.com/SeriousBug/dowitcher/internal/store"
 )
@@ -117,12 +118,23 @@ func main() {
 		log.Printf("MCP server enabled at /mcp — add it as a custom connector and authorize in the browser with your passkey")
 	}
 
+	// Build the OCR engine here rather than on first use so a DOWITCHER_TESSDATA
+	// that names an unreadable or empty file stops the process now, where the
+	// operator is watching, instead of surfacing as a failed tool call weeks
+	// later. Empty means the embedded English data. Constructing costs a file
+	// read: Tesseract itself is not compiled until something asks for text.
+	ocrEngine, err := ocr.New(os.Getenv("DOWITCHER_TESSDATA"))
+	if err != nil {
+		log.Fatalf("DOWITCHER_TESSDATA: %v", err)
+	}
+
 	srv := server.New(st, authMgr, server.Config{
 		RPID:       rpID,
 		Origin:     origin,
 		Secure:     strings.HasPrefix(origin, "https://"),
 		DevAuth:    devAuth,
 		MCPEnabled: mcpEnabled,
+		OCR:        ocrEngine,
 		Version:    buildVersion(),
 
 		LibraryRoot:   libraryRoot,

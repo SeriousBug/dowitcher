@@ -10,6 +10,7 @@ import {
   HardDrive,
   KeyRound,
   LogOut,
+  Plug,
   Plus,
   RefreshCw,
   RotateCcwKey,
@@ -27,7 +28,14 @@ import { useLiveData } from "../live/LiveData";
 import { http, HttpError } from "../api/http";
 import { toaster } from "../lib/toaster";
 import { comicLabel, formatDate, formatRelative } from "../lib/format";
-import type { Comic, HiddenComicsResponse, Invite, SignedOutOthers, User } from "../api/generated";
+import type {
+  AppVersion,
+  Comic,
+  HiddenComicsResponse,
+  Invite,
+  SignedOutOthers,
+  User,
+} from "../api/generated";
 
 // Why a hidden comic could not simply have been deleted, which is the question
 // this list raises. A library comic's file is under the read-only root.
@@ -71,6 +79,14 @@ export function SettingsPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [enrolling, setEnrolling] = useState(false);
 
+  // Same key and staleTime as the sidebar's build readout, so this shares that
+  // one fetch.
+  const versionQuery = useQuery({
+    queryKey: ["version"],
+    queryFn: () => http.get<AppVersion>("/api/version"),
+    staleTime: Infinity,
+  });
+
   const invitesQuery = useQuery({
     queryKey: ["invites"],
     queryFn: () => http.get<Invite[]>("/api/invites"),
@@ -107,11 +123,11 @@ export function SettingsPage() {
     onError: failed("Couldn't unhide that"),
   });
 
-  async function copyInvite(token: string) {
+  async function copyLink(key: string, link: string) {
     try {
-      await navigator.clipboard.writeText(inviteLink(token));
-      setCopied(token);
-      setTimeout(() => setCopied((c) => (c === token ? null : c)), 1800);
+      await navigator.clipboard.writeText(link);
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1800);
     } catch {
       // Clipboard access is denied outside a secure context, which is exactly
       // where a self-hosted instance often lives. Show the link so it can be
@@ -119,9 +135,13 @@ export function SettingsPage() {
       toaster.create({
         type: "info",
         title: "Copy this link yourself",
-        description: inviteLink(token),
+        description: link,
       });
     }
+  }
+
+  function copyInvite(token: string) {
+    return copyLink(token, inviteLink(token));
   }
 
   const scan = useMutation({
@@ -229,6 +249,8 @@ export function SettingsPage() {
   const invites = invitesQuery.data ?? [];
   const users = usersQuery.data ?? [];
   const hiddenComics = hiddenQuery.data?.comics ?? [];
+  const mcpEnabled = versionQuery.data?.mcpEnabled ?? false;
+  const mcpUrl = `${window.location.origin}/mcp`;
 
   return (
     <div className={vstack({ gap: "8", alignItems: "stretch", maxW: "3xl" })}>
@@ -448,6 +470,55 @@ export function SettingsPage() {
           )}
         </Section>
       )}
+
+      <Section
+        icon={<Plug size={17} className={css({ color: "textMuted" })} />}
+        title="MCP"
+        action={
+          mcpEnabled ? (
+            <Button
+              variant="ghost"
+              icon={copied === mcpUrl ? <Check size={15} /> : <Copy size={15} />}
+              onClick={() => copyLink(mcpUrl, mcpUrl)}
+            >
+              {copied === mcpUrl ? "Copied" : "Copy address"}
+            </Button>
+          ) : undefined
+        }
+      >
+        {versionQuery.isLoading ? (
+          <p className={css({ color: "textMuted", fontSize: "sm" })}>Looking…</p>
+        ) : mcpEnabled ? (
+          <div className={vstack({ gap: "2", alignItems: "stretch" })}>
+            <code
+              className={css({
+                px: "3",
+                py: "2.5",
+                borderRadius: "md",
+                bg: "bg",
+                borderWidth: "1px",
+                borderColor: "border",
+                fontFamily: "mono",
+                fontSize: "sm",
+                color: "ink.200",
+                wordBreak: "break-all",
+              })}
+            >
+              {mcpUrl}
+            </code>
+            <p className={css({ fontSize: "xs", color: "textMuted", lineHeight: "1.6" })}>
+              Add this address to an AI assistant that speaks MCP and it can search your
+              library, read what a comic is about and organise your collections. It sees
+              only the comics you can see.
+            </p>
+          </div>
+        ) : (
+          <p className={css({ color: "textMuted", fontSize: "sm", lineHeight: "1.6" })}>
+            MCP is switched off on this server, so AI assistants can't connect to your
+            library. Ask whoever runs it to turn it on.
+          </p>
+        )}
+      </Section>
 
       {user?.isAdmin && (
         <Section

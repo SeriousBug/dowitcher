@@ -9,6 +9,12 @@
 // visibility and sharing stay enforced in SQL where they already are. The one
 // rule this package adds on top is the admin gate on claim, which the HTTP layer
 // gets from requireAdmin and this layer has to apply itself.
+//
+// On the filesystem the rule is the same one the whole binary keeps: reads may
+// reach anywhere a comic's file lives, the library root included, but writes and
+// deletes may only ever touch the uploads dir. read_comic_pages therefore opens
+// library comics; delete_comic removes files only from uploadsDir, and
+// store.CanDeleteComic is what keeps a library-managed comic out of its reach.
 package mcp
 
 import (
@@ -19,6 +25,7 @@ import (
 
 	"github.com/SeriousBug/dowitcher/internal/api"
 	"github.com/SeriousBug/dowitcher/internal/auth"
+	"github.com/SeriousBug/dowitcher/internal/ocr"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,19 +39,32 @@ type Server struct {
 	// metadata URL a 401 points a client at, which is what kicks off OAuth
 	// discovery.
 	origin string
-	// uploadsDir is where dowitcher's own CBZs live. delete_comic is the only
-	// tool that touches the filesystem, and the only comics it can delete are the
-	// ones stored here, so the library root is deliberately not reachable from
-	// this package.
-	uploadsDir string
+	// uploadsDir and libraryRoot are the two roots a comic's stored path can be
+	// relative to, exactly as in server.Config. Both are readable; only uploadsDir
+	// is ever written to or deleted from.
+	uploadsDir  string
+	libraryRoot string
+	// ocr recognises text for read_comic_pages. It is built once at startup
+	// because that is where a bad DOWITCHER_TESSDATA has to be fatal, and it is
+	// cheap to hold: the engine reads the training data and nothing else until a
+	// call arrives, so no Tesseract module is compiled on a server that is never
+	// asked for text. Nil disables the text format rather than panicking.
+	ocr *ocr.Engine
 }
 
 // New returns an MCP server backed by st. version rides along in the server's
 // advertised implementation info; origin is the instance's public base URL,
-// used to advertise where the OAuth flow starts; uploadsDir is the data dir
-// holding the CBZs delete_comic may remove.
-func New(st *store.Store, version, origin, uploadsDir string) *Server {
-	return &Server{store: st, version: version, origin: origin, uploadsDir: uploadsDir}
+// used to advertise where the OAuth flow starts; uploadsDir and libraryRoot
+// resolve a comic row to a file; engine recognises page text, and may be nil.
+func New(st *store.Store, version, origin, uploadsDir, libraryRoot string, engine *ocr.Engine) *Server {
+	return &Server{
+		store:       st,
+		version:     version,
+		origin:      origin,
+		uploadsDir:  uploadsDir,
+		libraryRoot: libraryRoot,
+		ocr:         engine,
+	}
 }
 
 // Handler is the http.Handler to mount (at /mcp). It wraps the streamable-HTTP
@@ -102,13 +122,8 @@ func (s *Server) build() *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_comics",
-		Description: "List comics visible to you, newest first. Use offset and limit to page through a large library.",
+		Description: "List and search the comics visible to you. Filter by title/series text, a tag of yours, an exact series name, or a collection id; all filters are optional and combine with AND, and with none you get the whole library. Results are ordered by series, then issue number, then newest first, except when you filter by a collection, where the collection's own order is used. Page through with offset and limit.",
 	}, s.listComics)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "search_comics",
-		Description: "Search the comics visible to you by title/series text, a tag, an exact series name, or a collection id. All filters are optional and combine with AND.",
-	}, s.searchComics)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_comic",
@@ -116,9 +131,19 @@ func (s *Server) build() *mcp.Server {
 	}, s.getComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "read_comic_pages",
+		Description: "Read the contents of selected pages of a comic. Page numbers are 1-based, matching the pageCount get_comic reports. Choose the pages with pages (a list of individual page numbers), with fromPage and toPage (an inclusive range, both required together), or with both, in which case you get the union. Set format='image' to get the pages themselves as pictures, at most 10 per call and scaled to 1600px wide; set format='text' to get the lettering read off them by OCR, at most 5 per call. There is no default format, and asking for more pages than the limit is refused rather than truncated, so read a long stretch in several calls. OCR is imperfect on stylised lettering and gives you no idea what is drawn, so use format='image' unless you only need the words.",
+	}, s.readComicPages)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "rename_comic",
 		Description: "Set a comic's display title. Only the owner of an upload or claim, or an admin, can rename. The new title survives library rescans.",
 	}, s.renameComic)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "create_download_link",
+		Description: "Get a link that downloads a comic's CBZ file. The link works for one hour, needs no login, and covers only that one comic — treat it as a password and give it only to whoever should have the file.",
+	}, s.createDownloadLink)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_tags",
@@ -126,14 +151,9 @@ func (s *Server) build() *mcp.Server {
 	}, s.listTags)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "tag_comic",
-		Description: "Add one or more tags to one or more comics in a single call. Pass every comic id in comicIds and every tag in tags; each tag is added to each comic. New tag names are created automatically. Tags are private to you and never affect what anyone else sees. Existing tags on each comic are kept.",
-	}, s.tagComic)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "untag_comic",
-		Description: "Remove one or more of your tags from one or more comics in a single call. Tags not currently on a comic are ignored.",
-	}, s.untagComic)
+		Name:        "tag_comics",
+		Description: "Retag one or more comics in a single call: every name in add is added to each comic, every name in remove is taken off it. Tags not in either list are left alone, and new tag names are created automatically. Tags are private to you and never affect what anyone else sees. Comics you cannot see come back in skipped instead of failing the call.",
+	}, s.tagComics)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_collections",
@@ -147,7 +167,7 @@ func (s *Server) build() *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "update_collection",
-		Description: "Edit one of your collections or reading lists: rename it, change its description, or share/unshare it. Only the fields you pass change.",
+		Description: "Edit one of your collections or reading lists: rename it, change its description, share/unshare it, or pick which comic's cover represents it. Only the fields you pass change. Without a cover pick, the first comic in order is used.",
 	}, s.updateCollection)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -156,14 +176,9 @@ func (s *Server) build() *mcp.Server {
 	}, s.deleteCollection)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "add_to_collection",
-		Description: "Add a comic to the end of one of your own collections or reading lists. You must own it and be able to see the comic.",
-	}, s.addToCollection)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "remove_from_collection",
-		Description: "Remove a comic from one of your own collections or reading lists.",
-	}, s.removeFromCollection)
+		Name:        "edit_collection_comics",
+		Description: "Add comics to and remove comics from one of your own collections or reading lists in a single call. Added comics are appended in the order you list them, so passing a reading order here is enough — no reorder afterwards. Comics you cannot see, or that were not in the collection, come back in skipped instead of failing the call.",
+	}, s.editCollectionComics)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "reorder_collection",
@@ -171,24 +186,14 @@ func (s *Server) build() *mcp.Server {
 	}, s.reorderCollection)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "set_collection_cover",
-		Description: "Pick which comic's cover represents one of your collections or reading lists. Without a pick, the first comic in order is used.",
-	}, s.setCollectionCover)
-
-	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "claim_comic",
 		Description: "Admin only. Claim a library comic: it leaves every other user's view and becomes yours, without moving the file. Only comics that came from the watched library folder can be claimed.",
 	}, s.claimComic)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "hide_comic",
-		Description: "Admin only. Soft-delete a comic: it drops out of every listing, search and collection for every user, while its file, its tags and everyone's reading position are left untouched. This is what to use on a comic delete_comic refuses, such as a duplicate sitting in the read-only library folder. Reversible with unhide_comic.",
-	}, s.hideComic)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "unhide_comic",
-		Description: "Admin only. Put a hidden comic back on the shelf, with its tags and reading positions intact.",
-	}, s.unhideComic)
+		Name:        "set_comic_hidden",
+		Description: "Admin only. With hidden=true, soft-delete a comic: it drops out of every listing, search and collection for every user, while its file, its tags and everyone's reading position are left untouched. This is what to use on a comic delete_comic refuses, such as a duplicate sitting in the read-only library folder. With hidden=false it goes back on the shelf intact; list_hidden_comics is how you find one to restore.",
+	}, s.setComicHidden)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_hidden_comics",

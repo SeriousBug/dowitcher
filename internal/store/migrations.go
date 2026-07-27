@@ -274,6 +274,19 @@ var migrations = []string{
 	// tags and everyone's reading position, and it is what stops the next scan
 	// inserting the comic again as a stripped duplicate.
 	`ALTER TABLE comics ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;`,
+	// A download link is a bearer credential that stands in for a session on one
+	// route, so it is stored hashed like every other credential here. It names
+	// both the comic and the user it was minted for: the comic so a leaked link
+	// cannot be pointed at anything else, the user so redemption can re-run the
+	// visibility check the minting passed — a comic can stop being visible in the
+	// hour the link is alive.
+	`CREATE TABLE comic_download_tokens (
+		token_hash TEXT PRIMARY KEY,
+		comic_id TEXT NOT NULL REFERENCES comics(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		expires_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is
