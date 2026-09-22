@@ -16,6 +16,7 @@ import {
   RotateCcwKey,
   Trash2,
   ShieldCheck,
+  ShieldOff,
   Users as UsersIcon,
 } from "lucide-react";
 import { css } from "styled-system/css";
@@ -246,6 +247,23 @@ export function SettingsPage() {
     onError: failed("Couldn't remove that person"),
   });
 
+  // The server refuses to demote the last admin, so this only ever fails for
+  // that reason; the message it sends back is shown verbatim.
+  const setUserAdmin = useMutation({
+    mutationFn: ({ target, isAdmin }: { target: User; isAdmin: boolean }) =>
+      http.put<{ ok: boolean }>(`/api/users/${target.id}/admin`, { isAdmin }),
+    onSuccess: (_data, { target, isAdmin }) => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      toaster.create({
+        type: "success",
+        title: isAdmin
+          ? `${target.name} is now an admin`
+          : `${target.name} is no longer an admin`,
+      });
+    },
+    onError: failed("Couldn't change that person's role"),
+  });
+
   const invites = invitesQuery.data ?? [];
   const users = usersQuery.data ?? [];
   const hiddenComics = hiddenQuery.data?.comics ?? [];
@@ -433,16 +451,33 @@ export function SettingsPage() {
                     person.id === user.id ? " · that's you" : ""
                   }`}
                 >
-                  <div className={hstack({ gap: "1", flexShrink: 0 })}>
-                    {/*
-                      A life buoy meant nothing to anyone who did not already
-                      know what this does, and a native title tooltip never
-                      appears on touch at all. It also sits one target away from
-                      delete, so what it mints is spelled out rather than hinted.
-                    */}
-                    <Button
-                      variant="ghost"
-                      icon={<RotateCcwKey size={15} />}
+                   <div className={hstack({ gap: "1", flexShrink: 0 })}>
+                     <Button
+                       variant="ghost"
+                       icon={person.isAdmin ? <ShieldOff size={15} /> : <ShieldCheck size={15} />}
+                       title={
+                         person.isAdmin
+                           ? `${person.name} can manage users and the library. Click to make them an ordinary user.`
+                           : `Give ${person.name} admin rights over users and the library.`
+                       }
+                       busy={
+                         setUserAdmin.isPending && setUserAdmin.variables?.target.id === person.id
+                       }
+                       onClick={() =>
+                         setUserAdmin.mutate({ target: person, isAdmin: !person.isAdmin })
+                       }
+                     >
+                       {person.isAdmin ? "Remove admin" : "Make admin"}
+                     </Button>
+                     {/*
+                       A life buoy meant nothing to anyone who did not already
+                       know what this does, and a native title tooltip never
+                       appears on touch at all. It also sits one target away from
+                       delete, so what it mints is spelled out rather than hinted.
+                     */}
+                     <Button
+                       variant="ghost"
+                       icon={<RotateCcwKey size={15} />}
                       title={`Lost their passkey? This mints a one-time link for ${person.name} to enrol a new one.`}
                       busy={resetUser.isPending && resetUser.variables?.id === person.id}
                       onClick={() => resetUser.mutate(person)}

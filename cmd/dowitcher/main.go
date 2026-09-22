@@ -20,6 +20,7 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/imports"
 	"github.com/SeriousBug/dowitcher/internal/library"
 	"github.com/SeriousBug/dowitcher/internal/ocr"
+	"github.com/SeriousBug/dowitcher/internal/oidc"
 	"github.com/SeriousBug/dowitcher/internal/server"
 	"github.com/SeriousBug/dowitcher/internal/store"
 )
@@ -118,6 +119,40 @@ func main() {
 		log.Printf("MCP server enabled at /mcp — add it as a custom connector and authorize in the browser with your passkey")
 	}
 
+	// OIDC is opt-in and provider-agnostic: point it at any issuer that speaks
+	// OpenID Connect. Discovery runs here rather than on the first login, so a
+	// wrong issuer URL or an unreachable provider stops the process at startup
+	// where the operator is watching, instead of surfacing as a broken button.
+	var oidcProvider *oidc.Provider
+	if issuer := strings.TrimRight(os.Getenv("DOWITCHER_OIDC_ISSUER"), "/"); issuer != "" {
+		clientID := os.Getenv("DOWITCHER_OIDC_CLIENT_ID")
+		if clientID == "" {
+			log.Fatalf("DOWITCHER_OIDC_ISSUER is set but DOWITCHER_OIDC_CLIENT_ID is empty")
+		}
+		discoveryCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		p, err := oidc.New(discoveryCtx, oidc.Config{
+			Issuer:       issuer,
+			ClientID:     clientID,
+			ClientSecret: os.Getenv("DOWITCHER_OIDC_CLIENT_SECRET"),
+			Scopes:       envList("DOWITCHER_OIDC_SCOPES"),
+			NameClaim:    env("DOWITCHER_OIDC_NAME_CLAIM", "preferred_username"),
+			GroupsClaim:  env("DOWITCHER_OIDC_GROUPS_CLAIM", "groups"),
+			AdminGroups:  envList("DOWITCHER_OIDC_ADMIN_GROUPS"),
+			// A label for the login button. There is no interoperable place to
+			// read a provider's human name from discovery, so the operator names
+			// it.
+			DisplayName: env("DOWITCHER_OIDC_NAME", "SSO"),
+			RedirectURL: strings.TrimRight(origin, "/") + "/auth/oidc/callback",
+		})
+		cancel()
+		if err != nil {
+			log.Fatalf("DOWITCHER_OIDC_ISSUER %s: %v", issuer, err)
+		}
+		oidcProvider = p
+		log.Printf("OIDC login enabled via %s — set the client's callback URL to %s/auth/oidc/callback",
+			issuer, strings.TrimRight(origin, "/"))
+	}
+
 	// Build the OCR engine here rather than on first use so a DOWITCHER_TESSDATA
 	// that names an unreadable or empty file stops the process now, where the
 	// operator is watching, instead of surfacing as a failed tool call weeks
@@ -145,6 +180,7 @@ func main() {
 		// rather than the OS temp dir avoids filling a small tmpfs mid-import.
 		ImportTempDir: importTempDir,
 	})
+	srv.SetOIDC(oidcProvider)
 	log.Printf("library root %s, data dir %s", libraryRoot, dataDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -258,6 +294,18 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envList splits a comma-separated env var, dropping blank entries so a stray
+// trailing comma does not become an empty value that matches nothing.
+func envList(key string) []string {
+	var out []string
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // envBool reads a boolean toggle. Anything but a clearly-true value is off, so a

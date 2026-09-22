@@ -51,6 +51,9 @@ docker logs dowitcher
 | `DOWITCHER_LIBRARY` | `/library` | Watched library root |
 | `DOWITCHER_DATA` | `/data` | Working directory for uploads and imports |
 | `DOWITCHER_MCP` | unset | Set to `1` to expose the MCP server at `/mcp`. See below |
+| `DOWITCHER_OIDC_ISSUER` | unset | OIDC provider issuer URL. Setting it enables single sign-on. See below |
+| `DOWITCHER_OIDC_CLIENT_ID` | — | OIDC client id |
+| `DOWITCHER_OIDC_CLIENT_SECRET` | empty | OIDC client secret, if the client is confidential |
 | `DOWITCHER_DEV_AUTH` | unset | **Development only.** See below |
 
 `DOWITCHER_ORIGIN` and `DOWITCHER_RP_ID` are the two that matter. Passkeys are bound to an origin, so if
@@ -62,6 +65,17 @@ Dowitcher can expose your library as an [MCP](https://modelcontextprotocol.io) s
 an AI agent (Claude, etc.) at your instance and manage comics conversationally like "tag all Batman comics with their release years."
 This is **off by default**, set
 `DOWITCHER_MCP=1` to turn it on and then check your settings page for the setup link.
+
+### Single sign-on (OIDC)
+
+Dowitcher can sign users in through any OpenID Connect provider — Pocket ID, Keycloak, Authentik,
+Entra ID, and so on — alongside passkeys. Accounts are created on first login, and the first
+account becomes the admin. Set `DOWITCHER_OIDC_ISSUER`, `DOWITCHER_OIDC_CLIENT_ID` and (for a
+confidential client) `DOWITCHER_OIDC_CLIENT_SECRET`, and register
+`<DOWITCHER_ORIGIN>/auth/oidc/callback` as the redirect URL at the provider.
+
+See [docs/oidc.md](docs/oidc.md) for the full configuration reference and a step-by-step
+[Pocket ID](https://pocket-id.org) walkthrough.
 
 ### Recovery
 

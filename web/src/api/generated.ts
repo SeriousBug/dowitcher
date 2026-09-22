@@ -52,6 +52,28 @@ export interface SignedOutOthers {
   revoked: number /* int64 */;
 }
 /**
+ * AuthProviders is the response of GET /auth/providers: which sign-in methods
+ * this instance offers besides the passkey. The login page reads it before
+ * anyone is signed in, so it must carry nothing but what that page needs — a
+ * label, no issuer or client id, which are a stranger's business only if they
+ * are already an admin.
+ */
+export interface AuthProviders {
+  oidc?: OIDCProvider;
+}
+/**
+ * OIDCProvider describes a configured single sign-on provider to the login page.
+ */
+export interface OIDCProvider {
+  name: string;
+}
+/**
+ * SetUserAdminRequest is the body of PUT /api/users/{id}/admin.
+ */
+export interface SetUserAdminRequest {
+  isAdmin: boolean;
+}
+/**
  * Invite is a single-use enrollment link. ForUser set means the link enrolls an
  * additional passkey onto an existing account instead of creating one.
  */

@@ -329,6 +329,47 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
+// handleSetUserAdmin promotes or demotes a user. Demoting the last admin is
+// refused for the same reason deleting them is: the instance would lose its
+// only way to manage users. Promotion needs no such guard.
+func (s *Server) handleSetUserAdmin(w http.ResponseWriter, r *http.Request) {
+	var req api.SetUserAdminRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	id := r.PathValue("id")
+	target, err := s.store.GetUser(id)
+	if err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if !req.IsAdmin && target.IsAdmin {
+		admins, err := s.store.CountAdmins()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if admins <= 1 {
+			writeErr(w, http.StatusBadRequest, "cannot remove the last admin")
+			return
+		}
+	}
+	if err := s.store.SetUserAdmin(id, req.IsAdmin); err != nil {
+		if isNotFound(err) {
+			writeErr(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeOK(w)
+}
+
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.store.ListUsers()
 	if err != nil {

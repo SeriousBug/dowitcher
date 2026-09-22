@@ -17,8 +17,10 @@ env prefix, `cmd/dowitcher/`, and the cookie names — nothing structural.
   manager is `pnpm`.
 - **DB:** SQLite via `modernc.org/sqlite` (pure Go — this is what keeps `CGO_ENABLED=0` and the
   distroless image possible; do not swap in a CGO driver).
-- **Auth:** WebAuthn passkeys only, no passwords. Session cookie. First run prints a one-time
-  admin enrollment link to the logs; admins mint single-use invite links from the UI.
+- **Auth:** WebAuthn passkeys, no passwords. Session cookie. First run prints a one-time
+  admin enrollment link to the logs; admins mint single-use invite links from the UI. Optional
+  generic **OIDC** login (`DOWITCHER_OIDC_ISSUER`) provisions accounts from `(issuer, subject)`
+  on first login — see `internal/oidc/` and `docs/oidc.md`.
 
 ## Layout
 
@@ -27,7 +29,11 @@ env prefix, `cmd/dowitcher/`, and the cookie names — nothing structural.
 - `internal/server/` — HTTP handlers, routing (`server.go`), auth middleware (`middleware.go`,
   `requireAuth`/`requireAdmin`), `ws.go` hub. Handlers split per domain as `<domain>_handlers.go`.
 - `internal/auth/` — WebAuthn, invites, sessions, users.
-- `internal/store/` — SQLite persistence (`sqlite.go`, `migrations.go`, `accessors.go`).
+- `internal/oidc/` — optional OIDC relying party: discovery, PKCE code flow, ID-token
+  verification, and the claim→account rules. Wired in `internal/server/oidc_handlers.go`.
+- `internal/store/` — SQLite persistence (`sqlite.go`, `migrations.go`, `accessors.go`). External
+  logins live in `user_identities`, keyed `(issuer, subject)`; `ProvisionIdentity` is the only
+  path that creates a user from one.
 - `internal/cbz/` — CBZ reading: page listing, page extraction, ComicInfo.xml, cover.
 - `internal/library/` — filesystem scanner + fsnotify watcher over the library root.
 - `internal/imports/` — the image-folder import pipeline (dedupe, sort, package).

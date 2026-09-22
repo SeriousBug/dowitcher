@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { startAuthentication } from "@simplewebauthn/browser";
 import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/browser";
-import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
+import { Fingerprint, KeyRound, Loader2, LogIn } from "lucide-react";
 import { css, cx } from "styled-system/css";
 import { flex, hstack, vstack } from "styled-system/patterns";
 import { http, HttpError } from "../api/http";
 import { useAuth } from "../auth/AuthProvider";
+import type { AuthProviders } from "../api/generated";
 
 interface RequestOptions {
   publicKey: PublicKeyCredentialRequestOptionsJSON;
@@ -17,6 +19,28 @@ export function Login() {
   const { refresh } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Whether this instance offers single sign-on. The endpoint is public and
+  // cacheable; its answer cannot change while the page is open.
+  const providersQuery = useQuery({
+    queryKey: ["auth", "providers"],
+    queryFn: () => http.get<AuthProviders>("/auth/providers"),
+    staleTime: Infinity,
+  });
+  const oidc = providersQuery.data?.oidc;
+
+  function signInWithOIDC() {
+    // Only the OAuth consent flow hands this page a return_to, and only a
+    // same-origin /authorize path counts. Carry it through the provider so the
+    // person lands back at consent rather than the home page; the server
+    // re-validates it before redirecting.
+    const returnTo = new URLSearchParams(window.location.search).get("return_to");
+    const suffix =
+      returnTo && returnTo.startsWith("/authorize")
+        ? `?return_to=${encodeURIComponent(returnTo)}`
+        : "";
+    window.location.assign(`/auth/oidc/start${suffix}`);
+  }
 
   async function signIn() {
     setBusy(true);
@@ -106,6 +130,33 @@ export function Login() {
         )}
         {busy ? "Signing you in…" : "Sign in with a passkey"}
       </button>
+
+      {oidc && (
+        <button
+          onClick={signInWithOIDC}
+          className={flex({
+            align: "center",
+            justify: "center",
+            gap: "2.5",
+            w: "full",
+            px: "6",
+            py: "3.5",
+            borderRadius: "md",
+            bg: "surfaceRaised",
+            color: "text",
+            borderWidth: "1px",
+            borderColor: "border",
+            fontSize: "md",
+            fontWeight: "bold",
+            cursor: "pointer",
+            transition: "background 0.15s ease, border-color 0.15s ease",
+            _hover: { bg: "ink.750", borderColor: "ink.600" },
+          })}
+        >
+          <LogIn size={19} />
+          Sign in with {oidc.name}
+        </button>
+      )}
 
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </AuthCard>

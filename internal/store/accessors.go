@@ -184,6 +184,81 @@ func (s *Store) DeleteUser(id string) error {
 	return nil
 }
 
+// --- External identities (OIDC) ---
+
+// ProvisionIdentity resolves an OIDC assertion to an account, creating one when
+// this is the first time the provider has named that (issuer, subject). It
+// returns the account and whether it was created.
+//
+// The whole thing runs in one transaction because "is this the first account?"
+// and "create it" must not be separable: two concurrent first logins would both
+// see an empty users table and both claim the first-admin slot, and a crash
+// between creating the user and linking the identity would leave an account
+// nobody can sign in to.
+//
+// admin is what the provider's claims said. A brand-new account also becomes an
+// admin when it is the very first account on the instance, matching the passkey
+// bootstrap's first-run rule. An existing account that the claims promote is
+// promoted, but never demoted here: a groups claim that stops arriving, for any
+// of the hundred reasons a claim can go missing, must not quietly strip someone
+// of admin. Demotion is an explicit act, so it is left to the users API.
+func (s *Store) ProvisionIdentity(issuer, subject, email, name string, admin bool) (u api.User, created bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return api.User{}, false, err
+	}
+	defer tx.Rollback()
+
+	var isAdmin int
+	err = tx.QueryRow(`SELECT u.id,u.name,u.is_admin,u.created_at
+		FROM user_identities i JOIN users u ON u.id=i.user_id
+		WHERE i.issuer=? AND i.subject=?`, issuer, subject).
+		Scan(&u.ID, &u.Name, &isAdmin, &u.CreatedAt)
+	switch {
+	case err == nil:
+		u.IsAdmin = isAdmin != 0
+		if admin && !u.IsAdmin {
+			if _, err := tx.Exec(`UPDATE users SET is_admin=1 WHERE id=?`, u.ID); err != nil {
+				return api.User{}, false, err
+			}
+			u.IsAdmin = true
+		}
+		if _, err := tx.Exec(`UPDATE user_identities SET last_login_at=? WHERE issuer=? AND subject=?`,
+			time.Now().Unix(), issuer, subject); err != nil {
+			return api.User{}, false, err
+		}
+		return u, false, tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return api.User{}, false, err
+	}
+
+	if name == "" {
+		name = subject
+	}
+	// The first account on the instance is the admin, whichever way it signed in.
+	isAdmin = 1
+	if !admin {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+			return api.User{}, false, err
+		}
+		if n > 0 {
+			isAdmin = 0
+		}
+	}
+	now := time.Now().Unix()
+	id := randID()
+	if _, err := tx.Exec(`INSERT INTO users(id,name,is_admin,created_at) VALUES(?,?,?,?)`,
+		id, name, isAdmin, now); err != nil {
+		return api.User{}, false, err
+	}
+	if _, err := tx.Exec(`INSERT INTO user_identities(user_id,issuer,subject,email,created_at,last_login_at)
+		VALUES(?,?,?,?,?,?)`, id, issuer, subject, email, now, now); err != nil {
+		return api.User{}, false, err
+	}
+	return api.User{ID: id, Name: name, IsAdmin: isAdmin != 0, CreatedAt: now}, true, tx.Commit()
+}
+
 // --- Credentials ---
 
 // StoredCredential is a passkey row, decoded from the DB.

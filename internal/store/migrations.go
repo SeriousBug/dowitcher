@@ -287,6 +287,24 @@ var migrations = []string{
 		expires_at INTEGER NOT NULL,
 		created_at INTEGER NOT NULL
 	);`,
+	// An external identity is how an OIDC login finds (or creates) an account.
+	// The (issuer, subject) pair is the primary key, not the user id: the
+	// assertion is what names the account, and a provider that recycles a subject
+	// must not inherit the comics of whoever held it before. user_id cascades so
+	// deleting the account forgets the link with it.
+	`CREATE TABLE user_identities (
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		issuer TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		email TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		last_login_at INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (issuer, subject)
+	);`,
+	// Reverse lookup, "which providers can sign this user in". Login starts from
+	// the assertion, so nothing needs this yet; it is here so an account page can
+	// list linked providers without a table scan once one exists.
+	`CREATE INDEX idx_user_identities_user ON user_identities(user_id);`,
 }
 
 // migrate applies pending migrations inside one transaction. The transaction is

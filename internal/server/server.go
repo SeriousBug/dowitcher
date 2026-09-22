@@ -12,6 +12,7 @@ import (
 	"github.com/SeriousBug/dowitcher/internal/auth"
 	"github.com/SeriousBug/dowitcher/internal/mcp"
 	"github.com/SeriousBug/dowitcher/internal/ocr"
+	"github.com/SeriousBug/dowitcher/internal/oidc"
 	"github.com/SeriousBug/dowitcher/internal/store"
 	"github.com/SeriousBug/dowitcher/web"
 )
@@ -66,6 +67,8 @@ type Server struct {
 	// signature stays stable and tests can bring up a server without them.
 	lib      Library
 	importer Importer
+	// oidc is the configured single sign-on provider, or nil for passkey-only.
+	oidc *oidc.Provider
 }
 
 // New builds a Server with routes registered.
@@ -94,6 +97,10 @@ func (s *Server) Store() *store.Store { return s.store }
 // Config exposes the server config.
 func (s *Server) Cfg() Config { return s.cfg }
 
+// SetOIDC attaches the configured OIDC relying party. Nil (the default) leaves
+// passkey-only behaviour unchanged and the login page hides the button.
+func (s *Server) SetOIDC(p *oidc.Provider) { s.oidc = p }
+
 // routes is the access-control table: every route names its own gate here, so
 // the list reads as who-can-do-what without opening a handler.
 func (s *Server) routes() {
@@ -119,6 +126,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/me", s.requireAuth(s.handleMe))
 	s.mux.HandleFunc("DELETE /auth/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
 
+	// OIDC login, when configured. Public like the other sign-in routes: the
+	// browser reaches the callback before it has a session. The handlers answer
+	// 404 when no provider is attached, so a stock instance advertises nothing.
+	s.mux.HandleFunc("GET /auth/providers", s.handleAuthProviders)
+	s.mux.HandleFunc("GET /auth/oidc/start", s.handleOIDCStart)
+	s.mux.HandleFunc("GET /auth/oidc/callback", s.handleOIDCCallback)
+
 	// Invites and users (admin).
 	s.mux.HandleFunc("GET /api/invites", s.requireAdmin(s.handleListInvites))
 	s.mux.HandleFunc("POST /api/invites", s.requireAdmin(s.handleCreateInvite))
@@ -126,6 +140,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/users", s.requireAdmin(s.handleListUsers))
 	s.mux.HandleFunc("DELETE /api/users/{id}", s.requireAdmin(s.handleDeleteUser))
 	s.mux.HandleFunc("POST /api/users/{id}/reset", s.requireAdmin(s.handleResetUser))
+	s.mux.HandleFunc("PUT /api/users/{id}/admin", s.requireAdmin(s.handleSetUserAdmin))
 
 	// --- Library, comics, tags, collections and imports ---
 	// Owned by routes_stub.go and its handler files, registered here so the
